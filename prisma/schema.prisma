@@ -161,6 +161,7 @@ model User {
   ownedProjects           Project[]                @relation("ProjectOwner")
   projectMemberships      ProjectMember[]
   sectorMemberships       SectorMember[]
+  invitedProjectMembers ProjectMember[] @relation("ProjectMemberInviter")
   createdTasks            Task[]                   @relation("TaskCreator")
   taskAssignments         TaskAssignment[]
   taskSubmissions         TaskSubmission[]
@@ -175,7 +176,6 @@ model User {
   notificationPreferences NotificationPreference?
   badges                  UserBadge[]
   portfolio               Portfolio?
-  contributionRequests    ProjectMember[]          @relation("ContributionRequester")
 
   @@index([role, status])
   @@index([email])
@@ -250,11 +250,13 @@ model ProjectMember {
   userId    String
   role      ProjectMemberRole   @default(MEMBER)
   status    ProjectMemberStatus @default(PENDING)
+
+  invitedById String?
+  invitedBy   User?   @relation("ProjectMemberInviter", fields: [invitedById], references: [id])
   joinedAt  DateTime?
   leftAt    DateTime?
   project   Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
   user      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  requester User?               @relation("ContributionRequester", fields: [userId], references: [id], map: "contribution_requester")
   createdAt DateTime            @default(now())
   updatedAt DateTime            @updatedAt
 

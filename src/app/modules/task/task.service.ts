@@ -17,39 +17,44 @@ import type { ICreateTask, ITaskFilter, IUpdateTask } from "./task.interface.js"
 const TaskSearchableFields = ["title", "description"];
 
 const createTask = async (userId: string, payload: ICreateTask) => {
-  const { memberIds = [], groups = [], ...taskData } = payload;
+  const { memberIds = [], groups = [], sectorId, ...taskData } = payload;
 
   const task = await prisma.$transaction(async (tx) => {
     const createdTask = await tx.task.create({
       data: {
         ...taskData,
         createdById: userId,
+        sectorId: sectorId || null,
         status: TaskStatus.TODO,
       },
     });
 
-    // Assign to specific members
+    // 1. Assign to specific members
     if (payload.targetType === TaskTargetType.SPECIFIC_MEMBERS && memberIds.length > 0) {
       await tx.taskAssignment.createMany({
         data: memberIds.map((id) => ({
           taskId: createdTask.id,
           userId: id,
         })),
+        skipDuplicates: true,
       });
     }
 
-    // Assign to groups
+    // 2. Assign to groups
     if (payload.targetType === TaskTargetType.SPECIFIC_GROUPS && groups.length > 0) {
       await tx.taskTargetGroup.createMany({
         data: groups.map((group) => ({
           taskId: createdTask.id,
           groupName: group,
         })),
+        skipDuplicates: true,
       });
 
-      // Also create assignments for all members in those groups
       const membersInGroups = await tx.user.findMany({
-        where: { group: { in: groups }, status: "ACTIVE" },
+        where: {
+          group: { in: groups },
+          status: "ACTIVE",
+        },
         select: { id: true },
       });
 
@@ -64,19 +69,61 @@ const createTask = async (userId: string, payload: ICreateTask) => {
       }
     }
 
-    // Assign to all members
+    // 3. Assign to all members of the club
     if (payload.targetType === TaskTargetType.ALL_MEMBERS) {
       const allMembers = await tx.user.findMany({
         where: { status: "ACTIVE" },
         select: { id: true },
       });
 
-      await tx.taskAssignment.createMany({
-        data: allMembers.map((m) => ({
-          taskId: createdTask.id,
-          userId: m.id,
-        })),
+      if (allMembers.length > 0) {
+        await tx.taskAssignment.createMany({
+          data: allMembers.map((m) => ({
+            taskId: createdTask.id,
+            userId: m.id,
+          })),
+          skipDuplicates: true,
+        });
+      }
+    }
+
+    // 4. Assign to all members of a Sector (NEW)
+    if (payload.targetType === TaskTargetType.SECTOR_MEMBERS && sectorId) {
+      const sectorMembers = await tx.sectorMember.findMany({
+        where: { sectorId },
+        select: { userId: true },
       });
+
+      if (sectorMembers.length > 0) {
+        await tx.taskAssignment.createMany({
+          data: sectorMembers.map((m) => ({
+            taskId: createdTask.id,
+            userId: m.userId,
+          })),
+          skipDuplicates: true,
+        });
+      }
+    }
+
+    // 5. Assign to project members (if projectId exists)
+    if (payload.targetType === TaskTargetType.PROJECT_MEMBERS && payload.projectId) {
+      const projectMembers = await tx.projectMember.findMany({
+        where: {
+          projectId: payload.projectId,
+          status: "ACTIVE",
+        },
+        select: { userId: true },
+      });
+
+      if (projectMembers.length > 0) {
+        await tx.taskAssignment.createMany({
+          data: projectMembers.map((m) => ({
+            taskId: createdTask.id,
+            userId: m.userId,
+          })),
+          skipDuplicates: true,
+        });
+      }
     }
 
     return createdTask;
@@ -85,18 +132,26 @@ const createTask = async (userId: string, payload: ICreateTask) => {
   return prisma.task.findUnique({
     where: { id: task.id },
     include: {
-      createdBy: { select: { id: true, name: true, profilePicture: true } },
-      project: { select: { id: true, title: true } },
+      createdBy: {
+        select: { id: true, name: true, profilePicture: true },
+      },
+      project: {
+        select: { id: true, title: true },
+      },
+      sector: {
+        select: { id: true, name: true, slug: true },
+      },
       assignments: {
         include: {
-          user: { select: { id: true, name: true, profilePicture: true } },
+          user: {
+            select: { id: true, name: true, profilePicture: true },
+          },
         },
       },
       targetGroups: true,
     },
   });
 };
-
 const getAllTasks = async (filters: ITaskFilter, query: PaginationQuery) => {
   const { page, limit, skip, take, sortBy, sortOrder } = calculatePagination(query);
   const { searchTerm, ...filterData } = filters;
@@ -130,6 +185,7 @@ const getAllTasks = async (filters: ITaskFilter, query: PaginationQuery) => {
       include: {
         createdBy: { select: { id: true, name: true, profilePicture: true } },
         project: { select: { id: true, title: true } },
+        sector: { select: { id: true, name: true, slug: true } },
         _count: { select: { assignments: true, submissions: true } },
       },
     }),

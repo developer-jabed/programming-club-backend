@@ -18,7 +18,9 @@ export type ICreateTask = {
   targetType: TaskTargetType;
   // For SPECIFIC_MEMBERS
   memberIds?: string[];
-  // For SPECIFIC_GROUPS
+  // For SECTOR_MEMBERS
+  sectorId?: string;
+ 
   groups?: string[];
 };
 

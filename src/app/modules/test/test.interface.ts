@@ -10,6 +10,7 @@ export type ICreateTest = {
   shuffleQuestions?: boolean;
   showResultImmediately?: boolean;
   projectId?: string;
+  sectorId?: string;
   targetType: TestTargetType;
   memberIds?: string[];
   groups?: string[];

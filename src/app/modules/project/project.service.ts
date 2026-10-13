@@ -12,6 +12,7 @@ const createProject = async (userId: string, payload: ICreateProject) => {
     data: {
       ...payload,
       ownerId: userId,
+      sectorId: payload.sectorId,
       members: {
         create: {
           userId,

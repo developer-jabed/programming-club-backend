@@ -49,6 +49,17 @@ const getProjectStats = async (req: FastifyRequest, reply: FastifyReply) => {
   });
 };
 
+const getSectorStats = async (req: FastifyRequest, reply: FastifyReply) => {
+  const result = await AnalyticsService.getSectorStats();
+
+  return sendResponse(reply, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Sector stats retrieved successfully",
+    data: result,
+  });
+};
+
 const getMonthlyGrowth = async (req: FastifyRequest, reply: FastifyReply) => {
   const result = await AnalyticsService.getMonthlyGrowth();
 
@@ -64,6 +75,7 @@ export const AnalyticsController = {
   getDashboardStats,
   getRecentActivities,
   getLeaderboard,
+  getSectorStats,
   getProjectStats,
   getMonthlyGrowth,
 };

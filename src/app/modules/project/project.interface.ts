@@ -15,6 +15,7 @@ export type ICreateProject = {
   startDate?: string;
   endDate?: string;
   tags?: string[];
+  sectorId?: string;
 };
 
 export type IUpdateProject = Partial<ICreateProject> & {

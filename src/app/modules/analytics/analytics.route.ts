@@ -48,4 +48,13 @@ export default async function analyticsRoutes(fastify: FastifyInstance) {
     },
     AnalyticsController.getMonthlyGrowth
   );
+
+  // Sector stats
+  fastify.get(
+    "/sectors",
+    {
+      preHandler: [auth(UserRole.ADMIN, UserRole.MODERATOR)],
+    },
+    AnalyticsController.getSectorStats
+  );
 }

@@ -21,9 +21,8 @@ import type {
 } from "./test.interface.js";
 
 const TestSearchableFields = ["title", "description"];
-
 const createTest = async (userId: string, payload: ICreateTest) => {
-  const { questions, memberIds = [], groups = [], ...testData } = payload;
+  const { questions, memberIds = [], groups = [], sectorId, ...testData } = payload;
 
   return prisma.$transaction(async (tx) => {
     const totalMarks = questions.reduce((sum, q) => sum + (q.marks || 1), 0);
@@ -32,6 +31,7 @@ const createTest = async (userId: string, payload: ICreateTest) => {
       data: {
         ...testData,
         createdById: userId,
+        sectorId: sectorId || null,
         status: TestStatus.DRAFT,
         totalMarks,
       },
@@ -60,7 +60,7 @@ const createTest = async (userId: string, payload: ICreateTest) => {
       });
     }
 
-    // Targeting
+    // 1. Specific Members
     if (payload.targetType === TestTargetType.SPECIFIC_MEMBERS && memberIds.length > 0) {
       await tx.testAssignment.createMany({
         data: memberIds.map((id) => ({
@@ -71,20 +71,25 @@ const createTest = async (userId: string, payload: ICreateTest) => {
       });
     }
 
+    // 2. Specific Groups
     if (payload.targetType === TestTargetType.SPECIFIC_GROUPS && groups.length > 0) {
       await tx.testTargetGroup.createMany({
         data: groups.map((g) => ({
           testId: test.id,
           groupName: g,
         })),
+        skipDuplicates: true,
       });
 
       const members = await tx.user.findMany({
-        where: { group: { in: groups }, status: "ACTIVE" },
+        where: {
+          group: { in: groups },
+          status: "ACTIVE",
+        },
         select: { id: true },
       });
 
-      if (members.length) {
+      if (members.length > 0) {
         await tx.testAssignment.createMany({
           data: members.map((m) => ({
             testId: test.id,
@@ -95,30 +100,82 @@ const createTest = async (userId: string, payload: ICreateTest) => {
       }
     }
 
+    // 3. All Members
     if (payload.targetType === TestTargetType.ALL_MEMBERS) {
       const allMembers = await tx.user.findMany({
         where: { status: "ACTIVE" },
         select: { id: true },
       });
 
-      await tx.testAssignment.createMany({
-        data: allMembers.map((m) => ({
-          testId: test.id,
-          userId: m.id,
-        })),
-        skipDuplicates: true,
+      if (allMembers.length > 0) {
+        await tx.testAssignment.createMany({
+          data: allMembers.map((m) => ({
+            testId: test.id,
+            userId: m.id,
+          })),
+          skipDuplicates: true,
+        });
+      }
+    }
+
+    // 4. Sector Members (NEW)
+    if (payload.targetType === TestTargetType.SECTOR_MEMBERS && sectorId) {
+      const sectorMembers = await tx.sectorMember.findMany({
+        where: { sectorId },
+        select: { userId: true },
       });
+
+      if (sectorMembers.length > 0) {
+        await tx.testAssignment.createMany({
+          data: sectorMembers.map((m) => ({
+            testId: test.id,
+            userId: m.userId,
+          })),
+          skipDuplicates: true,
+        });
+      }
+    }
+
+    // 5. Project Members
+    if (payload.targetType === TestTargetType.PROJECT_MEMBERS && payload.projectId) {
+      const projectMembers = await tx.projectMember.findMany({
+        where: {
+          projectId: payload.projectId,
+          status: "ACTIVE",
+        },
+        select: { userId: true },
+      });
+
+      if (projectMembers.length > 0) {
+        await tx.testAssignment.createMany({
+          data: projectMembers.map((m) => ({
+            testId: test.id,
+            userId: m.userId,
+          })),
+          skipDuplicates: true,
+        });
+      }
     }
 
     return tx.test.findUnique({
       where: { id: test.id },
       include: {
-        createdBy: { select: { id: true, name: true, profilePicture: true } },
+        createdBy: {
+          select: { id: true, name: true, profilePicture: true },
+        },
+        project: {
+          select: { id: true, title: true },
+        },
+        sector: {
+          select: { id: true, name: true, slug: true },
+        },
         questions: {
           include: { options: true },
           orderBy: { order: "asc" },
         },
-        _count: { select: { assignments: true } },
+        _count: {
+          select: { assignments: true },
+        },
       },
     });
   });

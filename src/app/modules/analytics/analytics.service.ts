@@ -1,5 +1,11 @@
 import { prisma } from "../../shared/prisma.js";
-import { UserRole, UserStatus, ProjectStatus, TaskStatus, TestStatus } from "@prisma/client";
+import {
+  UserRole,
+  UserStatus,
+  ProjectStatus,
+  TaskStatus,
+  TestStatus,
+} from "@prisma/client";
 
 const getDashboardStats = async () => {
   const [
@@ -17,6 +23,8 @@ const getDashboardStats = async () => {
     publishedTests,
     totalSubmissions,
     pendingSubmissions,
+    totalSectors,
+    activeSectors,
   ] = await Promise.all([
     prisma.user.count(),
     prisma.user.count({ where: { role: UserRole.MEMBER } }),
@@ -36,6 +44,9 @@ const getDashboardStats = async () => {
 
     prisma.taskSubmission.count(),
     prisma.taskSubmission.count({ where: { status: "SUBMITTED" } }),
+
+    prisma.sector.count(),
+    prisma.sector.count({ where: { isActive: true } }),
   ]);
 
   return {
@@ -54,7 +65,8 @@ const getDashboardStats = async () => {
     tasks: {
       total: totalTasks,
       completed: completedTasks,
-      completionRate: totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0,
+      completionRate:
+        totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0,
     },
     tests: {
       total: totalTests,
@@ -64,57 +76,64 @@ const getDashboardStats = async () => {
       total: totalSubmissions,
       pending: pendingSubmissions,
     },
+    sectors: {
+      total: totalSectors,
+      active: activeSectors,
+    },
   };
 };
 
 const getRecentActivities = async (limit = 10) => {
-  const [recentProjects, recentTasks, recentSubmissions, recentUsers] = await Promise.all([
-    prisma.project.findMany({
-      take: limit,
-      orderBy: { createdAt: "desc" },
-      select: {
-        id: true,
-        title: true,
-        status: true,
-        createdAt: true,
-        owner: { select: { id: true, name: true } },
-      },
-    }),
-    prisma.task.findMany({
-      take: limit,
-      orderBy: { createdAt: "desc" },
-      select: {
-        id: true,
-        title: true,
-        status: true,
-        priority: true,
-        createdAt: true,
-        createdBy: { select: { id: true, name: true } },
-      },
-    }),
-    prisma.taskSubmission.findMany({
-      take: limit,
-      orderBy: { submittedAt: "desc" },
-      select: {
-        id: true,
-        status: true,
-        submittedAt: true,
-        user: { select: { id: true, name: true } },
-        task: { select: { id: true, title: true } },
-      },
-    }),
-    prisma.user.findMany({
-      take: limit,
-      orderBy: { createdAt: "desc" },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        role: true,
-        createdAt: true,
-      },
-    }),
-  ]);
+  const [recentProjects, recentTasks, recentSubmissions, recentUsers] =
+    await Promise.all([
+      prisma.project.findMany({
+        take: limit,
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          title: true,
+          status: true,
+          createdAt: true,
+          owner: { select: { id: true, name: true } },
+          sector: { select: { id: true, name: true } },
+        },
+      }),
+      prisma.task.findMany({
+        take: limit,
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          title: true,
+          status: true,
+          priority: true,
+          createdAt: true,
+          createdBy: { select: { id: true, name: true } },
+          sector: { select: { id: true, name: true } },
+        },
+      }),
+      prisma.taskSubmission.findMany({
+        take: limit,
+        orderBy: { submittedAt: "desc" },
+        select: {
+          id: true,
+          status: true,
+          submittedAt: true,
+          user: { select: { id: true, name: true } },
+          task: { select: { id: true, title: true } },
+        },
+      }),
+      prisma.user.findMany({
+        take: limit,
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          role: true,
+          createdAt: true,
+        },
+      }),
+    ]);
 
   return {
     recentProjects,
@@ -146,7 +165,10 @@ const getUserLeaderboard = async (limit = 10) => {
   const leaderboard = users
     .map((user) => {
       const completedTasks = user.taskAssignments.length;
-      const totalScore = user.taskAssignments.reduce((sum, t) => sum + (t.score || 0), 0);
+      const totalScore = user.taskAssignments.reduce(
+        (sum, t) => sum + (t.score || 0),
+        0
+      );
 
       return {
         id: user.id,
@@ -159,7 +181,10 @@ const getUserLeaderboard = async (limit = 10) => {
         badges: user.badges.map((b) => b.badge),
       };
     })
-    .sort((a, b) => b.totalScore - a.totalScore || b.completedTasks - a.completedTasks)
+    .sort(
+      (a, b) =>
+        b.totalScore - a.totalScore || b.completedTasks - a.completedTasks
+    )
     .slice(0, limit);
 
   return leaderboard;
@@ -171,6 +196,7 @@ const getProjectStats = async () => {
       id: true,
       title: true,
       status: true,
+      sector: { select: { id: true, name: true } },
       _count: {
         select: {
           members: true,
@@ -186,25 +212,48 @@ const getProjectStats = async () => {
   return projects;
 };
 
+const getSectorStats = async () => {
+  const sectors = await prisma.sector.findMany({
+    where: { isActive: true },
+    select: {
+      id: true,
+      name: true,
+      slug: true,
+      color: true,
+      icon: true,
+      _count: {
+        select: {
+          members: true,
+          projects: true,
+          tasks: true,
+          tests: true,
+        },
+      },
+    },
+    orderBy: { order: "asc" },
+  });
+
+  return sectors;
+};
+
 const getMonthlyGrowth = async () => {
-  // Last 6 months user growth
   const sixMonthsAgo = new Date();
   sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
-  const users = await prisma.user.groupBy({
-    by: ["createdAt"],
+  const users = await prisma.user.findMany({
     where: {
       createdAt: { gte: sixMonthsAgo },
     },
-    _count: true,
+    select: {
+      createdAt: true,
+    },
   });
 
-  // Simple monthly grouping (you can improve this)
   const monthlyData: Record<string, number> = {};
 
-  users.forEach((item) => {
-    const month = item.createdAt.toISOString().slice(0, 7); // YYYY-MM
-    monthlyData[month] = (monthlyData[month] || 0) + item._count;
+  users.forEach((user) => {
+    const month = user.createdAt.toISOString().slice(0, 7); // YYYY-MM
+    monthlyData[month] = (monthlyData[month] || 0) + 1;
   });
 
   return monthlyData;
@@ -215,5 +264,6 @@ export const AnalyticsService = {
   getRecentActivities,
   getUserLeaderboard,
   getProjectStats,
+  getSectorStats,        // ← new
   getMonthlyGrowth,
 };
