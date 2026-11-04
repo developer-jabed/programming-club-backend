@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build
+dist/
+build/
+*.tsbuildinfo
+
+# Environment (NEVER commit secrets)
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Logs & debug
+*.log
+logs/
+npm-debug.log*
+pnpm-debug.log*
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Prisma
+/generated/prisma
+
+# Uploads & temp
+uploads/*
+!uploads/.gitkeep
+tmp/
+temp/
+
+# Coverage / test
+coverage/
+.nyc_output/
+
+# Misc
+.vercel
+*.pem
