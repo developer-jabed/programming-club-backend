@@ -1,4 +1,4 @@
-import { SubmissionStatus } from "@prisma/client";
+import { NotificationType, SubmissionStatus } from "@prisma/client";
 import httpStatus from "http-status";
 import ApiError from "../../errors/api.error.js";
 import { prisma } from "../../shared/prisma.js";
@@ -8,7 +8,21 @@ import type {
   ICreateProjectSubmission,
 } from "./submission.interface.js";
 import { NotificationService } from "../notification/notification.service.js";
-import { NotificationType } from "@prisma/client";
+
+// ⚠ Not in your enum yet: add PROJECT_SUBMITTED to NotificationType
+// (then run `npx prisma migrate dev`) or point this at an existing value.
+const PROJECT_SUBMITTED = "PROJECT_SUBMITTED" as NotificationType;
+
+// A failed notification must never fail the main action
+const notify = async (
+  input: Parameters<typeof NotificationService.createNotification>[0]
+) => {
+  try {
+    await NotificationService.createNotification(input);
+  } catch (error) {
+    console.error("[SubmissionService.notify]", error);
+  }
+};
 
 // ─── Task Submission ──────────────────────────────────────────────
 
@@ -37,29 +51,33 @@ const submitTask = async (
     throw new ApiError(httpStatus.BAD_REQUEST, "This task is already accepted");
   }
 
-  const submission = await prisma.taskSubmission.create({
-    data: {
-      taskId,
-      userId,
-      content: payload.content,
-      link: payload.link,
-      fileUrls: payload.fileUrls || [],
-      status: SubmissionStatus.SUBMITTED,
-    },
-    include: {
-      user: { select: { id: true, name: true, profilePicture: true } },
-      task: { select: { id: true, title: true } },
-    },
-  });
+  // Create the submission and update the assignment together
+  const submission = await prisma.$transaction(async (tx) => {
+    const created = await tx.taskSubmission.create({
+      data: {
+        taskId,
+        userId,
+        content: payload.content,
+        link: payload.link,
+        fileUrls: payload.fileUrls || [],
+        status: SubmissionStatus.SUBMITTED,
+      },
+      include: {
+        user: { select: { id: true, name: true, profilePicture: true } },
+        task: { select: { id: true, title: true } },
+      },
+    });
 
-  // Update assignment status
-  await prisma.taskAssignment.update({
-    where: { taskId_userId: { taskId, userId } },
-    data: { status: "IN_REVIEW" },
+    await tx.taskAssignment.update({
+      where: { taskId_userId: { taskId, userId } },
+      data: { status: "IN_REVIEW" },
+    });
+
+    return created;
   });
 
   // Notify task creator
-  await NotificationService.createNotification({
+  await notify({
     userId: task.createdById,
     type: NotificationType.TASK_STATUS_CHANGED,
     title: "New Task Submission",
@@ -85,39 +103,43 @@ const reviewTaskSubmission = async (
     throw new ApiError(httpStatus.NOT_FOUND, "Submission not found");
   }
 
-  const updated = await prisma.taskSubmission.update({
-    where: { id: submissionId },
-    data: {
-      status: payload.status as SubmissionStatus,
-      score: payload.score,
-      feedback: payload.feedback,
-      reviewedAt: new Date(),
-      reviewedById: reviewerId,
-    },
-    include: {
-      user: { select: { id: true, name: true } },
-      task: { select: { id: true, title: true } },
-    },
-  });
-
-  // Update assignment
-  await prisma.taskAssignment.update({
-    where: {
-      taskId_userId: {
-        taskId: submission.taskId,
-        userId: submission.userId,
+  // Update the submission and the assignment together
+  const updated = await prisma.$transaction(async (tx) => {
+    const result = await tx.taskSubmission.update({
+      where: { id: submissionId },
+      data: {
+        status: payload.status as SubmissionStatus,
+        score: payload.score,
+        feedback: payload.feedback,
+        reviewedAt: new Date(),
+        reviewedById: reviewerId,
       },
-    },
-    data: {
-      status: payload.status === "ACCEPTED" ? "COMPLETED" : "IN_PROGRESS",
-      score: payload.score,
-      feedback: payload.feedback,
-      completedAt: payload.status === "ACCEPTED" ? new Date() : null,
-    },
+      include: {
+        user: { select: { id: true, name: true } },
+        task: { select: { id: true, title: true } },
+      },
+    });
+
+    await tx.taskAssignment.update({
+      where: {
+        taskId_userId: {
+          taskId: submission.taskId,
+          userId: submission.userId,
+        },
+      },
+      data: {
+        status: payload.status === "ACCEPTED" ? "COMPLETED" : "IN_PROGRESS",
+        score: payload.score,
+        feedback: payload.feedback,
+        completedAt: payload.status === "ACCEPTED" ? new Date() : null,
+      },
+    });
+
+    return result;
   });
 
   // Notify student
-  await NotificationService.createNotification({
+  await notify({
     userId: submission.userId,
     type: NotificationType.SUBMISSION_REVIEWED,
     title: "Submission Reviewed",
@@ -175,11 +197,11 @@ const submitProject = async (
     },
   });
 
-  // Notify project owner
+  // Notify project owner (skip if the owner submitted it)
   if (project.ownerId !== userId) {
-    await NotificationService.createNotification({
+    await notify({
       userId: project.ownerId,
-      type: NotificationType.SUBMISSION_REVIEWED,
+      type: PROJECT_SUBMITTED,
       title: "New Project Submission",
       body: `${submission.submittedBy.name} submitted the project: ${project.title}`,
       entityType: "ProjectSubmission",
@@ -220,7 +242,7 @@ const reviewProjectSubmission = async (
   });
 
   // Notify submitter
-  await NotificationService.createNotification({
+  await notify({
     userId: submission.submittedById,
     type: NotificationType.SUBMISSION_REVIEWED,
     title: "Project Submission Reviewed",

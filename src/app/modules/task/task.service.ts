@@ -1,4 +1,5 @@
 import {
+  NotificationType,
   Prisma,
   TaskStatus,
   TaskPriority,
@@ -12,12 +13,72 @@ import {
   type PaginationQuery,
 } from "../../helper/paginationHelper.js";
 import { prisma } from "../../shared/prisma.js";
+import { NotificationService } from "../notification/notification.service.js";
 import type { ICreateTask, ITaskFilter, IUpdateTask } from "./task.interface.js";
 
 const TaskSearchableFields = ["title", "description"];
 
 // Task has createdAt/dueDate/priority/title. Anything else falls back to createdAt.
 const MY_TASK_SORTABLE = ["createdAt", "dueDate", "priority", "title"];
+
+// ⚠ Check your NotificationType enum. If TASK_ASSIGNED doesn't exist, add it
+// (then run `npx prisma migrate dev`) or point this at an existing value.
+const TASK_ASSIGNED = "TASK_ASSIGNED" as NotificationType;
+
+// ─── Notification helpers ─────────────────────────────────────────
+
+// Removes users who turned off in-app notifications or task-assigned alerts
+const filterByPreference = async (userIds: string[]) => {
+  if (userIds.length === 0) return [];
+
+  const blocked = await prisma.notificationPreference.findMany({
+    where: {
+      userId: { in: userIds },
+      OR: [{ inAppEnabled: false }, { taskAssigned: false }],
+    },
+    select: { userId: true },
+  });
+
+  const blockedIds = new Set(blocked.map((b) => b.userId));
+  return userIds.filter((id) => !blockedIds.has(id));
+};
+
+// Sends to many users in small batches. Never throws.
+const notifyMany = async (
+  userIds: string[],
+  input: {
+    type: NotificationType;
+    title: string;
+    body: string;
+    entityId: string;
+  }
+) => {
+  try {
+    const targets = await filterByPreference(userIds);
+    const BATCH = 20;
+
+    for (let i = 0; i < targets.length; i += BATCH) {
+      await Promise.all(
+        targets.slice(i, i + BATCH).map((userId) =>
+          NotificationService.createNotification({
+            userId,
+            type: input.type,
+            title: input.title,
+            body: input.body,
+            entityType: "Task",
+            entityId: input.entityId,
+          }).catch((error: unknown) =>
+            console.error("[TaskService.notifyMany]", error)
+          )
+        )
+      );
+    }
+  } catch (error) {
+    console.error("[TaskService.notifyMany]", error);
+  }
+};
+
+// ─── Create ───────────────────────────────────────────────────────
 
 const createTask = async (userId: string, payload: ICreateTask) => {
   const { memberIds = [], groups = [], sectorId, ...taskData } = payload;
@@ -132,7 +193,7 @@ const createTask = async (userId: string, payload: ICreateTask) => {
     return createdTask;
   });
 
-  return prisma.task.findUnique({
+  const result = await prisma.task.findUnique({
     where: { id: task.id },
     include: {
       createdBy: {
@@ -154,6 +215,22 @@ const createTask = async (userId: string, payload: ICreateTask) => {
       targetGroups: true,
     },
   });
+
+  // Notify everyone assigned (except the creator)
+  if (result) {
+    const assigneeIds = result.assignments
+      .map((a) => a.userId)
+      .filter((id) => id !== userId);
+
+    await notifyMany(assigneeIds, {
+      type: TASK_ASSIGNED,
+      title: "New task assigned",
+      body: `${result.createdBy.name} assigned you a task: ${result.title}`,
+      entityId: result.id,
+    });
+  }
+
+  return result;
 };
 
 const getAllTasks = async (filters: ITaskFilter, query: PaginationQuery) => {
@@ -334,7 +411,6 @@ const getProjectTasks = async (
   };
 };
 
-
 const getSingleTask = async (id: string) => {
   const task = await prisma.task.findUnique({
     where: { id },
@@ -366,10 +442,45 @@ const updateTask = async (id: string, userId: string, payload: IUpdateTask) => {
     throw new ApiError(httpStatus.FORBIDDEN, "Only creator can update this task");
   }
 
-  return prisma.task.update({
+  const updated = await prisma.task.update({
     where: { id },
     data: payload,
   });
+
+  // Notify assignees only when something they care about actually changed
+  const p = payload as any;
+  const changes: string[] = [];
+
+  if (p.status !== undefined && p.status !== task.status) {
+    changes.push(`status is now ${String(p.status).toLowerCase().replace(/_/g, " ")}`);
+  }
+  if (p.priority !== undefined && p.priority !== task.priority) {
+    changes.push(`priority is now ${String(p.priority).toLowerCase()}`);
+  }
+  if (p.dueDate !== undefined) {
+    const before = task.dueDate ? task.dueDate.getTime() : null;
+    const after = p.dueDate ? new Date(p.dueDate).getTime() : null;
+    if (before !== after) changes.push("the due date was changed");
+  }
+
+  if (changes.length > 0) {
+    const assignments = await prisma.taskAssignment.findMany({
+      where: { taskId: id },
+      select: { userId: true },
+    });
+
+    await notifyMany(
+      assignments.map((a) => a.userId).filter((uid) => uid !== userId),
+      {
+        type: NotificationType.TASK_STATUS_CHANGED,
+        title: "Task updated",
+        body: `"${updated.title}": ${changes.join(", ")}`,
+        entityId: id,
+      }
+    );
+  }
+
+  return updated;
 };
 
 const deleteTask = async (id: string, userId: string) => {

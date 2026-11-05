@@ -1,4 +1,5 @@
 import {
+  NotificationType,
   Prisma,
   TestStatus,
   TestTargetType,
@@ -13,6 +14,7 @@ import {
   type PaginationQuery,
 } from "../../helper/paginationHelper.js";
 import { prisma } from "../../shared/prisma.js";
+import { NotificationService } from "../notification/notification.service.js";
 import type {
   ICreateTest,
   ITestFilter,
@@ -21,6 +23,62 @@ import type {
 } from "./test.interface.js";
 
 const TestSearchableFields = ["title", "description"];
+
+// ⚠ Check your NotificationType enum. If these don't exist, add them
+// (then run `npx prisma migrate dev`) or point them at existing values.
+const TEST_ASSIGNED = "TEST_ASSIGNED" as NotificationType;
+const TEST_ATTEMPT_SUBMITTED = "TEST_ATTEMPT_SUBMITTED" as NotificationType;
+
+// ─── Notification helpers ─────────────────────────────────────────
+
+// Removes users who turned off in-app notifications or test alerts
+const filterByPreference = async (userIds: string[]) => {
+  if (userIds.length === 0) return [];
+
+  const blocked = await prisma.notificationPreference.findMany({
+    where: {
+      userId: { in: userIds },
+      OR: [{ inAppEnabled: false }, { testAssigned: false }],
+    },
+    select: { userId: true },
+  });
+
+  const blockedIds = new Set(blocked.map((b) => b.userId));
+  return userIds.filter((id) => !blockedIds.has(id));
+};
+
+// Sends to many users in small batches. Never throws.
+const notifyMany = async (
+  userIds: string[],
+  input: { type: NotificationType; title: string; body: string; entityId: string }
+) => {
+  try {
+    const targets = await filterByPreference(userIds);
+    const BATCH = 20;
+
+    for (let i = 0; i < targets.length; i += BATCH) {
+      await Promise.all(
+        targets.slice(i, i + BATCH).map((userId) =>
+          NotificationService.createNotification({
+            userId,
+            type: input.type,
+            title: input.title,
+            body: input.body,
+            entityType: "Test",
+            entityId: input.entityId,
+          }).catch((error: unknown) =>
+            console.error("[TestService.notifyMany]", error)
+          )
+        )
+      );
+    }
+  } catch (error) {
+    console.error("[TestService.notifyMany]", error);
+  }
+};
+
+// ─── Create ───────────────────────────────────────────────────────
+
 const createTest = async (userId: string, payload: ICreateTest) => {
   const { questions, memberIds = [], groups = [], sectorId, ...testData } = payload;
 
@@ -279,10 +337,30 @@ const publishTest = async (id: string, userId: string) => {
     throw new ApiError(httpStatus.FORBIDDEN, "Only creator can publish this test");
   }
 
-  return prisma.test.update({
+  const published = await prisma.test.update({
     where: { id },
     data: { status: TestStatus.PUBLISHED },
   });
+
+  // Notify assignees only on the first publish (no duplicates)
+  if (test.status !== TestStatus.PUBLISHED) {
+    const assignments = await prisma.testAssignment.findMany({
+      where: { testId: id },
+      select: { userId: true },
+    });
+
+    await notifyMany(
+      assignments.map((a) => a.userId).filter((uid) => uid !== userId),
+      {
+        type: TEST_ASSIGNED,
+        title: "New test available",
+        body: `A new test was published: ${published.title}`,
+        entityId: id,
+      }
+    );
+  }
+
+  return published;
 };
 
 const deleteTest = async (id: string, userId: string) => {
@@ -416,6 +494,27 @@ const submitAttempt = async (
       },
     },
   });
+
+  // Notify the test creator (skip if they attempted their own test)
+  if (test.createdById !== userId) {
+    try {
+      const student = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true },
+      });
+
+      await NotificationService.createNotification({
+        userId: test.createdById,
+        type: TEST_ATTEMPT_SUBMITTED,
+        title: "Test attempt submitted",
+        body: `${student?.name ?? "A member"} submitted "${test.title}" (${totalScore}/${test.totalMarks})`,
+        entityType: "Test",
+        entityId: testId,
+      });
+    } catch (error) {
+      console.error("[TestService.submitAttempt notify]", error);
+    }
+  }
 
   return updatedAttempt;
 };

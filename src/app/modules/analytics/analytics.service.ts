@@ -5,6 +5,7 @@ import {
   ProjectStatus,
   TaskStatus,
   TestStatus,
+  SubmissionStatus,
 } from "@prisma/client";
 
 const getDashboardStats = async () => {
@@ -84,10 +85,13 @@ const getDashboardStats = async () => {
 };
 
 const getRecentActivities = async (limit = 10) => {
+  // limit often arrives from the query string as text; Prisma needs a number
+  const take = Math.min(Math.max(Math.trunc(Number(limit)) || 10, 1), 50);
+
   const [recentProjects, recentTasks, recentSubmissions, recentUsers] =
     await Promise.all([
       prisma.project.findMany({
-        take: limit,
+        take,
         orderBy: { createdAt: "desc" },
         select: {
           id: true,
@@ -99,7 +103,7 @@ const getRecentActivities = async (limit = 10) => {
         },
       }),
       prisma.task.findMany({
-        take: limit,
+        take,
         orderBy: { createdAt: "desc" },
         select: {
           id: true,
@@ -112,7 +116,7 @@ const getRecentActivities = async (limit = 10) => {
         },
       }),
       prisma.taskSubmission.findMany({
-        take: limit,
+        take,
         orderBy: { submittedAt: "desc" },
         select: {
           id: true,
@@ -123,7 +127,7 @@ const getRecentActivities = async (limit = 10) => {
         },
       }),
       prisma.user.findMany({
-        take: limit,
+        take,
         orderBy: { createdAt: "desc" },
         select: {
           id: true,
@@ -143,51 +147,109 @@ const getRecentActivities = async (limit = 10) => {
   };
 };
 
+/**
+ * Leaderboard = sum of the marks each member got per task.
+ *
+ * A mark can live in two places in your schema:
+ *   - TaskAssignment.score   (set when the assignment itself is graded)
+ *   - TaskSubmission.score   (set when a submission is reviewed)
+ * The old version only read TaskAssignment.score of COMPLETED assignments,
+ * so marks given on a submission (or on an assignment that was not switched to
+ * COMPLETED) were counted as 0.
+ *
+ * Per (user, task) we count ONE mark:
+ *   assignment score  →  otherwise the latest non-rejected submission score.
+ */
 const getUserLeaderboard = async (limit = 10) => {
-  const users = await prisma.user.findMany({
-    where: { role: UserRole.MEMBER, status: UserStatus.ACTIVE },
-    select: {
-      id: true,
-      name: true,
-      profilePicture: true,
-      group: true,
-      semester: true,
-      taskAssignments: {
-        where: { status: "COMPLETED" },
-        select: { id: true, score: true },
-      },
-      badges: {
-        select: { badge: { select: { name: true, iconUrl: true } } },
-      },
-    },
-  });
+  const take = Math.min(Math.max(Math.trunc(Number(limit)) || 10, 1), 100);
 
-  const leaderboard = users
+  const [users, assignments, submissions] = await Promise.all([
+    prisma.user.findMany({
+      where: { role: UserRole.MEMBER, status: UserStatus.ACTIVE },
+      select: {
+        id: true,
+        name: true,
+        profilePicture: true,
+        group: true,
+        semester: true,
+        badges: {
+          select: { badge: { select: { name: true, iconUrl: true } } },
+        },
+      },
+    }),
+    prisma.taskAssignment.findMany({
+      where: {
+        OR: [{ status: TaskStatus.COMPLETED }, { score: { not: null } }],
+      },
+      select: { userId: true, taskId: true, status: true, score: true },
+    }),
+    prisma.taskSubmission.findMany({
+      where: { score: { not: null } },
+      select: {
+        userId: true,
+        taskId: true,
+        status: true,
+        score: true,
+      },
+      orderBy: { submittedAt: "asc" }, // later (re-graded) submissions win
+    }),
+  ]);
+
+  // one entry per (user, task)
+  const perTask = new Map<
+    string,
+    { userId: string; score: number; completed: boolean }
+  >();
+
+  for (const s of submissions) {
+    if (s.status === SubmissionStatus.REJECTED) continue;
+    perTask.set(`${s.userId}|${s.taskId}`, {
+      userId: s.userId,
+      score: s.score ?? 0,
+      completed: s.status === SubmissionStatus.ACCEPTED,
+    });
+  }
+
+  for (const a of assignments) {
+    const key = `${a.userId}|${a.taskId}`;
+    const fromSubmission = perTask.get(key);
+    perTask.set(key, {
+      userId: a.userId,
+      score: a.score ?? fromSubmission?.score ?? 0,
+      completed:
+        a.status === TaskStatus.COMPLETED || fromSubmission?.completed === true,
+    });
+  }
+
+  const totals = new Map<string, { totalScore: number; completedTasks: number }>();
+  for (const t of perTask.values()) {
+    const row = totals.get(t.userId) ?? { totalScore: 0, completedTasks: 0 };
+    row.totalScore += t.score;
+    if (t.completed) row.completedTasks += 1;
+    totals.set(t.userId, row);
+  }
+
+  return users
     .map((user) => {
-      const completedTasks = user.taskAssignments.length;
-      const totalScore = user.taskAssignments.reduce(
-        (sum, t) => sum + (t.score || 0),
-        0
-      );
-
+      const total = totals.get(user.id) ?? { totalScore: 0, completedTasks: 0 };
       return {
         id: user.id,
         name: user.name,
         profilePicture: user.profilePicture,
         group: user.group,
         semester: user.semester,
-        completedTasks,
-        totalScore,
+        completedTasks: total.completedTasks,
+        totalScore: total.totalScore,
         badges: user.badges.map((b) => b.badge),
       };
     })
     .sort(
       (a, b) =>
-        b.totalScore - a.totalScore || b.completedTasks - a.completedTasks
+        b.totalScore - a.totalScore ||
+        b.completedTasks - a.completedTasks ||
+        a.name.localeCompare(b.name),
     )
-    .slice(0, limit);
-
-  return leaderboard;
+    .slice(0, take);
 };
 
 const getProjectStats = async () => {

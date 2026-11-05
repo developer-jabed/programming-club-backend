@@ -3,17 +3,13 @@ import httpStatus from "http-status";
 import { UserService } from "./user.service.js";
 import sendResponse from "../../shared/sendResponse.js";
 import pick from "../../helper/pick.js";
-import type { MultipartFile } from "@fastify/multipart";
+import type { IUserCreate, IUserUpdate } from "./user.interface.js";
+import { parseBodyAndFile } from "../../helper/parseMultipart.js";
 
 const createUser = async (req: FastifyRequest, reply: FastifyReply) => {
-  let file: MultipartFile | undefined;
-
-  // Only try to read file if the request is multipart
-  if (req.isMultipart()) {
-    file = await req.file();
-  }
-
-  const data = req.body as any;
+  // multipart: JSON in `data` field + image in `file` part
+  // json: falls back to req.body
+  const { data, file } = await parseBodyAndFile<IUserCreate>(req);
 
   const result = await UserService.createUser(data, file);
 
@@ -27,13 +23,8 @@ const createUser = async (req: FastifyRequest, reply: FastifyReply) => {
 
 const updateUser = async (req: FastifyRequest, reply: FastifyReply) => {
   const { id } = req.params as { id: string };
-  let file: MultipartFile | undefined;
 
-  if (req.isMultipart()) {
-    file = await req.file();
-  }
-
-  const data = req.body as any;
+  const { data, file } = await parseBodyAndFile<IUserUpdate>(req);
 
   const result = await UserService.updateUser(id, data, file);
 

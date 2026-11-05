@@ -1,11 +1,22 @@
-import { Prisma, ProjectMemberRole, ProjectMemberStatus } from "@prisma/client";
+import {
+  NotificationType,
+  Prisma,
+  ProjectMemberRole,
+  ProjectMemberStatus,
+} from "@prisma/client";
 import httpStatus from "http-status";
 import ApiError from "../../errors/api.error.js";
 import { calculatePagination, buildPaginationMeta, type PaginationQuery } from "../../helper/paginationHelper.js";
 import { prisma } from "../../shared/prisma.js";
+import { NotificationService } from "../notification/notification.service.js";
 import type { ICreateProject, IProjectFilter, IUpdateProject } from "./project.interface.js";
 
 const ProjectSearchableFields = ["title", "description"];
+
+// ⚠ Check your NotificationType enum (see notes below). Change these if your
+// enum has different names.
+const CONTRIBUTION_REQUEST = "CONTRIBUTION_REQUEST" as NotificationType;
+const CONTRIBUTION_RESPONSE = "CONTRIBUTION_RESPONSE" as NotificationType;
 
 // Shared where-builder for list endpoints
 const buildProjectWhere = (
@@ -293,28 +304,52 @@ const requestToJoin = async (projectId: string, userId: string) => {
     where: { projectId_userId: { projectId, userId } },
   });
 
+  let request;
+
   if (existing) {
     // A member who left may ask again
-    if (existing.status === ProjectMemberStatus.LEFT) {
-      return prisma.projectMember.update({
-        where: { id: existing.id },
-        data: { status: ProjectMemberStatus.PENDING, joinedAt: null },
-      });
+    if (existing.status !== ProjectMemberStatus.LEFT) {
+      throw new ApiError(
+        httpStatus.CONFLICT,
+        "You have already requested to join or are a member of this project"
+      );
     }
-    throw new ApiError(
-      httpStatus.CONFLICT,
-      "You have already requested to join or are a member of this project"
-    );
+
+    request = await prisma.projectMember.update({
+      where: { id: existing.id },
+      data: { status: ProjectMemberStatus.PENDING, joinedAt: null },
+    });
+  } else {
+    request = await prisma.projectMember.create({
+      data: {
+        projectId,
+        userId,
+        role: ProjectMemberRole.MEMBER,
+        status: ProjectMemberStatus.PENDING,
+      },
+    });
   }
 
-  return prisma.projectMember.create({
-    data: {
-      projectId,
-      userId,
-      role: ProjectMemberRole.MEMBER,
-      status: ProjectMemberStatus.PENDING,
-    },
+  // Notify the project owner (never fails the request)
+  const requester = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { name: true },
   });
+
+  await NotificationService.notifySafe(
+    {
+      userId: project.ownerId,
+      type: CONTRIBUTION_REQUEST,
+      title: "New contribution request",
+      body: `${requester?.name ?? "A member"} wants to join "${project.title}"`,
+      entityType: "Project",
+      entityId: projectId,
+      metadata: { projectId, memberId: request.id, requesterId: userId },
+    },
+    "contributionReq"
+  );
+
+  return request;
 };
 
 const handleContributionRequest = async (
@@ -347,13 +382,46 @@ const handleContributionRequest = async (
     }
   }
 
-  return prisma.projectMember.update({
+  const updated = await prisma.projectMember.update({
     where: { id: memberId },
     data: {
       status: status as ProjectMemberStatus,
       joinedAt: status === "ACTIVE" ? new Date() : null,
     },
   });
+
+  // Notify the requester only when the status actually changed
+  if (member.status !== status) {
+    const messages = {
+      ACTIVE: {
+        title: "Request approved",
+        body: `You are now a member of "${project.title}"`,
+      },
+      REJECTED: {
+        title: "Request rejected",
+        body: `Your request to join "${project.title}" was not approved`,
+      },
+      LEFT: {
+        title: "Removed from project",
+        body: `You were removed from "${project.title}"`,
+      },
+    } as const;
+
+    await NotificationService.notifySafe(
+      {
+        userId: member.userId,
+        type: CONTRIBUTION_RESPONSE,
+        title: messages[status].title,
+        body: messages[status].body,
+        entityType: "Project",
+        entityId: projectId,
+        metadata: { projectId, memberId, status },
+      },
+      "contributionReq"
+    );
+  }
+
+  return updated;
 };
 
 export const ProjectService = {

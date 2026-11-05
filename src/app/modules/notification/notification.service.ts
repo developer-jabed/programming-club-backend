@@ -9,11 +9,31 @@ import {
 import { prisma } from "../../shared/prisma.js";
 import type { ICreateNotification, INotificationFilter } from "./notification.interface.js";
 
+export type PreferenceKey =
+  | "taskAssigned"
+  | "deadlineReminder"
+  | "chatMention"
+  | "testAssigned"
+  | "contributionReq";
+
+// Types that really exist in your Prisma enum
+const VALID_TYPES = new Set<string>(Object.values(NotificationType));
+// Known to exist (used elsewhere in your code); used when a type isn't in the enum
+const FALLBACK_TYPE = NotificationType.TASK_STATUS_CHANGED;
+
+const resolveType = (type: NotificationType): NotificationType => {
+  if (VALID_TYPES.has(type)) return type;
+  console.warn(
+    `[NotificationService] "${type}" is not in the NotificationType enum, using ${FALLBACK_TYPE}. Add it to schema.prisma to fix.`
+  );
+  return FALLBACK_TYPE;
+};
+
 const createNotification = async (payload: ICreateNotification) => {
   return prisma.notification.create({
     data: {
       userId: payload.userId,
-      type: payload.type,
+      type: resolveType(payload.type),
       title: payload.title,
       body: payload.body,
       channel: payload.channel || NotificationChannel.IN_APP,
@@ -31,10 +51,12 @@ const createManyNotifications = async (
 ) => {
   if (userIds.length === 0) return;
 
+  const type = resolveType(data.type);
+
   return prisma.notification.createMany({
     data: userIds.map((userId) => ({
       userId,
-      type: data.type,
+      type,
       title: data.title,
       body: data.body,
       channel: data.channel || NotificationChannel.IN_APP,
@@ -43,6 +65,53 @@ const createManyNotifications = async (
       metadata: data.metadata || {},
     })),
   });
+};
+
+// Removes users who turned off in-app notifications (or the given type)
+const filterByPreference = async (userIds: string[], key?: PreferenceKey) => {
+  if (userIds.length === 0) return [];
+
+  const blocked = await prisma.notificationPreference.findMany({
+    where: {
+      userId: { in: userIds },
+      OR: [
+        { inAppEnabled: false },
+        ...(key ? [{ [key]: false } as Prisma.NotificationPreferenceWhereInput] : []),
+      ],
+    },
+    select: { userId: true },
+  });
+
+  const blockedIds = new Set(blocked.map((b) => b.userId));
+  return userIds.filter((id) => !blockedIds.has(id));
+};
+
+// Preference-aware, never throws: a failed notification must not break the main action
+const notifySafe = async (payload: ICreateNotification, key?: PreferenceKey) => {
+  try {
+    const [allowed] = await filterByPreference([payload.userId], key);
+    if (!allowed) return null;
+    return await createNotification(payload);
+  } catch (error) {
+    console.error("[NotificationService.notifySafe]", error);
+    return null;
+  }
+};
+
+// Bulk version of notifySafe (one insert for all allowed users)
+const notifyManySafe = async (
+  userIds: string[],
+  data: Omit<ICreateNotification, "userId">,
+  key?: PreferenceKey
+) => {
+  try {
+    const targets = await filterByPreference([...new Set(userIds)], key);
+    if (targets.length === 0) return null;
+    return await createManyNotifications(targets, data);
+  } catch (error) {
+    console.error("[NotificationService.notifyManySafe]", error);
+    return null;
+  }
 };
 
 const getMyNotifications = async (
@@ -139,6 +208,8 @@ const deleteNotification = async (notificationId: string, userId: string) => {
 export const NotificationService = {
   createNotification,
   createManyNotifications,
+  notifySafe,
+  notifyManySafe,
   getMyNotifications,
   getUnreadCount,
   markAsRead,

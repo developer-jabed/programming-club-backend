@@ -14,7 +14,7 @@ import type {
   IUserFilterRequest,
   IUserUpdate,
 } from "./user.interface.js";
-import { fileUploader } from "../../helper/fileUploader.js";
+import { fileUploader, type UploadedFile } from "../../helper/fileUploader.js";
 import type { MultipartFile } from "@fastify/multipart";
 import { prisma } from "../../shared/prisma.js";
 
@@ -26,6 +26,68 @@ const UserSearchableFields = [
   "phone",
   "group",
 ];
+
+const ALLOWED_IMAGE_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+];
+const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
+const PROFILE_FOLDER = "programming-club/profile";
+
+const USER_SELECT = {
+  id: true,
+  email: true,
+  name: true,
+  role: true,
+  status: true,
+  profilePicture: true,
+  phone: true,
+  roll: true,
+  semester: true,
+  shift: true,
+  group: true,
+  registration: true,
+  bloodGroup: true,
+  presentAddress: true,
+  createdAt: true,
+  updatedAt: true,
+  lastLoginAt: true,
+} satisfies Prisma.UserSelect;
+
+// Validates and uploads a profile picture, returns its secure URL
+const uploadProfilePicture = async (file: MultipartFile): Promise<string> => {
+  let uploadedFile: UploadedFile;
+
+  try {
+    // Reads the buffer and detects the real MIME type
+    uploadedFile = await fileUploader.readFileBuffer(file);
+  } catch (error: any) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      error?.message || "Invalid file"
+    );
+  }
+
+  // readFileBuffer also allows PDFs, but a profile picture must be an image
+  if (!ALLOWED_IMAGE_TYPES.includes(uploadedFile.mimetype)) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      "Only JPG, PNG, WebP or GIF images are allowed"
+    );
+  }
+
+  if (uploadedFile.buffer.length > MAX_IMAGE_SIZE) {
+    throw new ApiError(httpStatus.BAD_REQUEST, "Image must be 5MB or smaller");
+  }
+
+  const result = await fileUploader.uploadToCloudinary(
+    uploadedFile,
+    PROFILE_FOLDER
+  );
+  return result.secure_url;
+};
 
 const createUser = async (
   payload: IUserCreate,
@@ -44,12 +106,7 @@ const createUser = async (
   let profilePicture: string | undefined;
 
   if (file) {
-    const uploadedFile = await fileUploader.readFileBuffer(file);
-    const result = await fileUploader.uploadToCloudinary(
-      uploadedFile,
-      "programming-club/profile"
-    );
-    profilePicture = result.secure_url;
+    profilePicture = await uploadProfilePicture(file);
   }
 
   const result = await prisma.user.create({
@@ -117,25 +174,7 @@ const getAllUsers = async (
       orderBy: {
         [sortBy]: sortOrder,
       },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        role: true,
-        status: true,
-        profilePicture: true,
-        phone: true,
-        roll: true,
-        semester: true,
-        shift: true,
-        group: true,
-        registration: true,
-        bloodGroup: true,
-        presentAddress: true,
-        createdAt: true,
-        updatedAt: true,
-        lastLoginAt: true,
-      },
+      select: USER_SELECT,
     }),
     prisma.user.count({ where: whereConditions }),
   ]);
@@ -149,25 +188,7 @@ const getAllUsers = async (
 const getSingleUser = async (id: string) => {
   const result = await prisma.user.findUnique({
     where: { id },
-    select: {
-      id: true,
-      email: true,
-      name: true,
-      role: true,
-      status: true,
-      profilePicture: true,
-      phone: true,
-      roll: true,
-      semester: true,
-      shift: true,
-      group: true,
-      registration: true,
-      bloodGroup: true,
-      presentAddress: true,
-      createdAt: true,
-      updatedAt: true,
-      lastLoginAt: true,
-    },
+    select: USER_SELECT,
   });
 
   if (!result) {
@@ -188,21 +209,18 @@ const updateUser = async (
     throw new ApiError(httpStatus.NOT_FOUND, "User not found");
   }
 
-  let profilePicture = isExist.profilePicture;
+  const dataToUpdate: any = { ...payload };
 
   if (file) {
-    const uploadedFile = await fileUploader.readFileBuffer(file);
-    const result = await fileUploader.uploadToCloudinary(
-      uploadedFile,
-      "programming-club/profile"
-    );
-    profilePicture = result.secure_url;
+    // New upload replaces the old picture
+    dataToUpdate.profilePicture = await uploadProfilePicture(file);
+  } else if ((payload as any).profilePicture === null) {
+    // Explicit removal
+    dataToUpdate.profilePicture = null;
+  } else {
+    // Keep the existing picture (never trust a client-sent URL)
+    delete dataToUpdate.profilePicture;
   }
-
-  const dataToUpdate: any = {
-    ...payload,
-    profilePicture,
-  };
 
   if (payload.password) {
     dataToUpdate.passwordHash = await bcrypt.hash(payload.password, 12);
@@ -212,24 +230,7 @@ const updateUser = async (
   const result = await prisma.user.update({
     where: { id },
     data: dataToUpdate,
-    select: {
-      id: true,
-      email: true,
-      name: true,
-      role: true,
-      status: true,
-      profilePicture: true,
-      phone: true,
-      roll: true,
-      semester: true,
-      shift: true,
-      group: true,
-      registration: true,
-      bloodGroup: true,
-      presentAddress: true,
-      createdAt: true,
-      updatedAt: true,
-    },
+    select: USER_SELECT,
   });
 
   return result;

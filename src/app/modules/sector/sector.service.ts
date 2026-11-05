@@ -1,4 +1,4 @@
-import { Prisma, SectorMemberRole } from "@prisma/client";
+import { NotificationType, Prisma, SectorMemberRole } from "@prisma/client";
 import httpStatus from "http-status";
 import ApiError from "../../errors/api.error.js";
 import {
@@ -7,7 +7,13 @@ import {
   type PaginationQuery,
 } from "../../helper/paginationHelper.js";
 import { prisma } from "../../shared/prisma.js";
+import { NotificationService } from "../notification/notification.service.js";
 import type { ICreateSector, ISectorFilter, IUpdateSector } from "./sector.interface.js";
+
+// ⚠ Check your NotificationType enum (see notes below). Change these if your
+// enum has different names.
+const SECTOR_ASSIGNED = "SECTOR_ASSIGNED" as NotificationType;
+const SECTOR_REMOVED = "SECTOR_REMOVED" as NotificationType;
 
 const createSector = async (payload: ICreateSector) => {
   const isExist = await prisma.sector.findFirst({
@@ -198,13 +204,37 @@ const assignMembers = async (sectorId: string, userIds: string[]) => {
     throw new ApiError(httpStatus.BAD_REQUEST, "No valid users selected");
   }
 
+  // Only users who are not already members get added and notified
+  const existingMembers = await prisma.sectorMember.findMany({
+    where: { sectorId, userId: { in: validUsers.map((u) => u.id) } },
+    select: { userId: true },
+  });
+  const existingIds = new Set(existingMembers.map((m) => m.userId));
+  const newUserIds = validUsers
+    .map((u) => u.id)
+    .filter((id) => !existingIds.has(id));
+
+  if (newUserIds.length === 0) {
+    return { assigned: 0 };
+  }
+
   const result = await prisma.sectorMember.createMany({
-    data: validUsers.map((u) => ({
+    data: newUserIds.map((userId) => ({
       sectorId,
-      userId: u.id,
+      userId,
       role: SectorMemberRole.MEMBER,
     })),
     skipDuplicates: true,
+  });
+
+  // Notify the newly added users (one bulk insert, never fails the request)
+  await NotificationService.notifyManySafe(newUserIds, {
+    type: SECTOR_ASSIGNED,
+    title: "Added to a sector",
+    body: `You have been added to the "${sector.name}" sector`,
+    entityType: "Sector",
+    entityId: sectorId,
+    metadata: { sectorId },
   });
 
   return { assigned: result.count };
@@ -212,6 +242,11 @@ const assignMembers = async (sectorId: string, userIds: string[]) => {
 
 // ── Admin: remove one user from a sector ──
 const removeMember = async (sectorId: string, userId: string) => {
+  const sector = await prisma.sector.findUnique({
+    where: { id: sectorId },
+    select: { name: true },
+  });
+
   const result = await prisma.sectorMember.deleteMany({
     where: { sectorId, userId },
   });
@@ -219,6 +254,17 @@ const removeMember = async (sectorId: string, userId: string) => {
   if (result.count === 0) {
     throw new ApiError(httpStatus.NOT_FOUND, "Member not found in this sector");
   }
+
+  // Notify the removed user (never fails the request)
+  await NotificationService.notifySafe({
+    userId,
+    type: SECTOR_REMOVED,
+    title: "Removed from a sector",
+    body: `You were removed from the "${sector?.name ?? "sector"}" sector`,
+    entityType: "Sector",
+    entityId: sectorId,
+    metadata: { sectorId },
+  });
 
   return { removed: result.count };
 };

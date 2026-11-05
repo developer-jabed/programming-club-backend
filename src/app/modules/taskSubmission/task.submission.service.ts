@@ -1,4 +1,4 @@
-import { Prisma, SubmissionStatus, UserRole } from "@prisma/client";
+import { NotificationType, Prisma, SubmissionStatus, UserRole } from "@prisma/client";
 import httpStatus from "http-status";
 import ApiError from "../../errors/api.error.js";
 import {
@@ -7,6 +7,7 @@ import {
   type PaginationQuery,
 } from "../../helper/paginationHelper.js";
 import { prisma } from "../../shared/prisma.js";
+import { NotificationService } from "../notification/notification.service.js";
 import type {
   ISubmitTask,
   IUpdateSubmission,
@@ -37,6 +38,17 @@ const include = {
   reviewedBy: { select: { id: true, name: true } },
   task: { select: { id: true, title: true, createdById: true } },
 } satisfies Prisma.TaskSubmissionInclude;
+
+// A failed notification must never fail the main action
+const notify = async (
+  input: Parameters<typeof NotificationService.createNotification>[0]
+) => {
+  try {
+    await NotificationService.createNotification(input);
+  } catch (error) {
+    console.error("[TaskSubmissionService.notify]", error);
+  }
+};
 
 const getTaskOrThrow = async (taskId: string) => {
   const task = await prisma.task.findUnique({ where: { id: taskId } });
@@ -86,7 +98,7 @@ const submitTask = async (taskId: string, userId: string, payload: ISubmitTask) 
     );
   }
 
-  return prisma.taskSubmission.create({
+  const submission = await prisma.taskSubmission.create({
     data: {
       taskId,
       userId,
@@ -96,6 +108,20 @@ const submitTask = async (taskId: string, userId: string, payload: ISubmitTask) 
     },
     include,
   });
+
+  // Notify the task creator (skip if they submitted it themselves)
+  if (submission.task.createdById !== userId) {
+    await notify({
+      userId: submission.task.createdById,
+      type: NotificationType.TASK_STATUS_CHANGED,
+      title: latest ? "Task resubmitted" : "New task submission",
+      body: `${submission.user.name} ${latest ? "resubmitted" : "submitted"} the task: ${submission.task.title}`,
+      entityType: "TaskSubmission",
+      entityId: submission.id,
+    });
+  }
+
+  return submission;
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -308,7 +334,7 @@ const reviewSubmission = async (
     throw new ApiError(httpStatus.BAD_REQUEST, `Score cannot be more than ${maxScore}`);
   }
 
-  return prisma.taskSubmission.update({
+  const updated = await prisma.taskSubmission.update({
     where: { id },
     data: {
       status: payload.status,
@@ -319,6 +345,24 @@ const reviewSubmission = async (
     },
     include,
   });
+
+  // Notify the member who submitted
+  const statusText = String(payload.status).toLowerCase().replace(/_/g, " ");
+  const scoreText =
+    payload.score !== undefined && payload.score !== null
+      ? ` (score: ${payload.score}/${maxScore})`
+      : "";
+
+  await notify({
+    userId: submission.userId,
+    type: NotificationType.SUBMISSION_REVIEWED,
+    title: "Submission reviewed",
+    body: `Your submission for "${submission.task.title}" was ${statusText}${scoreText}`,
+    entityType: "TaskSubmission",
+    entityId: submission.id,
+  });
+
+  return updated;
 };
 
 export const TaskSubmissionService = {
