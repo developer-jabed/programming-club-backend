@@ -1,7 +1,10 @@
 allowBuilds:
   '@prisma/engines': true
+  '@sparticuz/chromium': true
   bcrypt: true
   esbuild: true
   msgpackr-extract: true
   prisma: true
   puppeteer: true
+  puppeteer-core: true
+  sharp: true
