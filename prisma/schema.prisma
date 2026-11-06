@@ -34,6 +34,23 @@ enum SectorMemberRole {
   MEMBER
 }
 
+enum FeatureRequestStatus {
+  OPEN
+  UNDER_REVIEW
+  PLANNED
+  IN_PROGRESS
+  COMPLETED
+  REJECTED
+  DUPLICATE
+}
+
+enum FeatureRequestPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
 enum ProjectStatus {
   DRAFT
   OPEN
@@ -177,6 +194,11 @@ model User {
   badges                  UserBadge[]
   portfolio               Portfolio?
 
+  createdFeatureRequests   FeatureRequest[]      @relation("FeatureRequestCreator")
+  resolvedFeatureRequests  FeatureRequest[]      @relation("FeatureRequestResolver")
+  featureRequestReplies    FeatureRequestReply[]
+  featureUpdates           FeatureUpdate[]       @relation("FeatureUpdateAuthor")
+
   @@index([role, status])
   @@index([email])
   @@index([group, semester])
@@ -198,6 +220,8 @@ model Sector {
   tasks       Task[]
   tests       Test[]
   members     SectorMember[]
+  featureRequests FeatureRequest[]
+  featureUpdates  FeatureUpdate[]
 
   @@map("sectors")
 }
@@ -237,6 +261,7 @@ model Project {
   chatMessages ChatMessage[]
   submissions  ProjectSubmission[]
   tests        Test[]
+  featureRequests FeatureRequest[]
 
   @@index([ownerId])
   @@index([sectorId])
@@ -572,4 +597,117 @@ model Portfolio {
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("portfolios")
+}
+
+
+model FeatureRequest {
+  id          String                 @id @default(cuid())
+  title       String
+  description String
+  status      FeatureRequestStatus   @default(OPEN)
+  priority    FeatureRequestPriority @default(MEDIUM)
+  votes       Int                    @default(0)
+
+  // Who submitted
+  createdById String
+  createdBy   User                   @relation("FeatureRequestCreator", fields: [createdById], references: [id])
+
+  // Optional relations
+  sectorId    String?
+  sector      Sector?                @relation(fields: [sectorId], references: [id])
+  projectId   String?
+  project     Project?               @relation(fields: [projectId], references: [id])
+
+  // Admin response summary
+  adminNote    String?
+  resolvedAt   DateTime?
+  resolvedById String?
+  resolvedBy   User?                 @relation("FeatureRequestResolver", fields: [resolvedById], references: [id])
+
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
+
+  // Relations
+  replies         FeatureRequestReply[]
+  relatedUpdates  FeatureUpdate[]          // ← opposite side of FeatureUpdate.relatedFeatureRequest
+
+  @@index([status, createdAt])
+  @@index([createdById])
+  @@index([sectorId])
+  @@index([projectId])
+  @@map("feature_requests")
+}
+
+model FeatureRequestReply {
+  id               String         @id @default(cuid())
+  featureRequestId String
+  featureRequest   FeatureRequest @relation(fields: [featureRequestId], references: [id], onDelete: Cascade)
+
+  content          String
+  isAdminReply     Boolean        @default(false) // true when admin/moderator replies
+
+  authorId         String
+  author           User           @relation(fields: [authorId], references: [id])
+
+  // Optional reply-to (threaded)
+  parentReplyId    String?
+  parentReply      FeatureRequestReply?  @relation("ReplyThread", fields: [parentReplyId], references: [id])
+  childReplies     FeatureRequestReply[] @relation("ReplyThread")
+
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+  deletedAt        DateTime?
+
+  @@index([featureRequestId, createdAt])
+  @@index([authorId])
+  @@map("feature_request_replies")
+}
+
+
+enum FeatureUpdateType {
+  FEATURE_UPDATE
+  BUG_FIX
+  IMPROVEMENT
+  TECHNICAL_REPORT
+  ANNOUNCEMENT
+  ROADMAP
+}
+
+enum FeatureUpdateVisibility {
+  PUBLIC          // everyone can see
+  MEMBERS_ONLY
+  ADMIN_ONLY
+}
+
+model FeatureUpdate {
+  id          String                   @id @default(cuid())
+  title       String
+  content     String                   // markdown supported recommended
+  type        FeatureUpdateType        @default(FEATURE_UPDATE)
+  visibility  FeatureUpdateVisibility  @default(PUBLIC)
+  isPinned    Boolean                  @default(false)
+
+  // Version / release info (optional)
+  version     String?
+  tags        String[]
+
+  // Who posted (usually admin/moderator)
+  authorId    String
+  author      User                     @relation("FeatureUpdateAuthor", fields: [authorId], references: [id])
+
+  // Optional links
+  relatedFeatureRequestId String?
+  relatedFeatureRequest   FeatureRequest? @relation(fields: [relatedFeatureRequestId], references: [id])
+
+  sectorId    String?
+  sector      Sector?                  @relation(fields: [sectorId], references: [id])
+
+  publishedAt DateTime?
+  createdAt   DateTime                 @default(now())
+  updatedAt   DateTime                 @updatedAt
+
+  @@index([type, publishedAt])
+  @@index([visibility, isPinned])
+  @@index([authorId])
+  @@map("feature_updates")
 }
