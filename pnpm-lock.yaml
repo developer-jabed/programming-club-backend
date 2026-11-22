@@ -41,6 +41,9 @@ importers:
       '@fastify/swagger-ui':
         specifier: ^6.0.0
         version: 6.1.2
+      '@getbrevo/brevo':
+        specifier: ^6.2.0
+        version: 6.2.0
       '@prisma/adapter-pg':
         specifier: ^7.8.0
         version: 7.10.1
@@ -438,6 +441,10 @@ packages:
 
   '@fastify/swagger@9.9.2':
     resolution: {integrity: sha512-ayxItVgf/1axBvw33lqsA5ns02YMpT1r59G/HCJraRNWWBzvLgN+oiCBPhuzTiN67TvctlCYkG0+40WLKYuusQ==}
+
+  '@getbrevo/brevo@6.2.0':
+    resolution: {integrity: sha512-k+7w3Desc+bVF+LpJ+1/4wfiopaJDl4ky7jJMQbtjT3loVpS8b1xuFBTfdzZnAyYSmL8Rov2n8GeRxGt2p0oRA==}
+    engines: {node: '>=18.0.0'}
 
   '@humanfs/core@0.19.2':
     resolution: {integrity: sha512-UhXNm+CFMWcbChXywFwkmhqjs3PRCmcSa/hfBgLIb7oQ5HNb1wS0icWsGtSAUNgefHeI+eBrA8I1fxmbHsGdvA==}
@@ -2847,6 +2854,8 @@ snapshots:
       yaml: 2.9.1
     transitivePeerDependencies:
       - supports-color
+
+  '@getbrevo/brevo@6.2.0': {}
 
   '@humanfs/core@0.19.2':
     dependencies:

@@ -1,24 +1,8 @@
-// src/helper/mail.service.ts  (or your current path)
-import nodemailer from "nodemailer";
+import { TransactionalEmailsApi, SendSmtpEmail } from "@getbrevo/brevo";
 
 const FRONTEND_URL =
   process.env.FRONTEND_URL || "https://programming-club-frontend.vercel.app";
 
-const EMAIL_FROM =
-  process.env.EMAIL_FROM || "DPI Programming Club <programmingclub09@gmail.com>";
-
-// Create transporter once
-const transporter = nodemailer.createTransport({
-  host: "smtp-relay.brevo.com",
-  port: 587,
-  secure: false, // true for 465, false for 587
-  auth: {
-    user: process.env.BREVO_SMTP_USER,
-    pass: process.env.BREVO_SMTP_KEY,
-  },
-});
-
-// Prevents HTML injection
 const escapeHtml = (value: string): string =>
   value
     .replace(/&/g, "&amp;")
@@ -37,7 +21,7 @@ const buildWelcomeHtml = ({ name, email, password }: WelcomeEmailPayload) => `
 <div style="font-family:Arial,Helvetica,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#111827;">
   <h2 style="margin:0 0 8px;color:#4f46e5;">Welcome to DPI Programming Club 🎉</h2>
   <p style="margin:0 0 16px;">Hi <strong>${escapeHtml(name)}</strong>,</p>
-  <p style="margin:0 0 16px;">Your account has been created. Use the details below to log in to the website:</p>
+  <p style="margin:0 0 16px;">Your account has been created. Use the details below to log in:</p>
   <table style="width:100%;border-collapse:collapse;background:#f3f4f6;border-radius:8px;">
     <tr>
       <td style="padding:12px 16px;color:#6b7280;width:120px;">User ID</td>
@@ -64,39 +48,45 @@ export interface SendMailResult {
   error?: string;
 }
 
-/**
- * Sends the welcome email using Brevo SMTP.
- * Never throws – a mail problem must not break user creation.
- */
 export const sendWelcomeEmail = async (
   payload: WelcomeEmailPayload
 ): Promise<SendMailResult> => {
-  if (!process.env.BREVO_SMTP_USER || !process.env.BREVO_SMTP_KEY) {
-    const message = "BREVO_SMTP_USER or BREVO_SMTP_KEY is not set";
-    console.error(`[mail] ${message}. Welcome email skipped.`);
-    return { sent: false, error: message };
+  if (!process.env.BREVO_API_KEY) {
+    console.error("[mail] BREVO_API_KEY is not set");
+    return { sent: false, error: "BREVO_API_KEY is not set" };
   }
 
-  console.log(`[mail] Sending welcome email to ${payload.email} (from: ${EMAIL_FROM})`);
+  console.log(`[mail] Sending welcome email to ${payload.email}`);
 
   try {
-    const info = await transporter.sendMail({
-      from: EMAIL_FROM,
-      to: payload.email,
-      subject: `Welcome to DPI Programming Club, ${payload.name}!`,
-      html: buildWelcomeHtml(payload),
-      text:
-        `Welcome to DPI Programming Club, ${payload.name}!\n\n` +
-        `Website: ${FRONTEND_URL}\n` +
-        `User ID: ${payload.email}\n` +
-        `Password: ${payload.password}\n\n` +
-        `Please change your password after your first login.`,
-    });
+    const apiInstance = new TransactionalEmailsApi();
+    // @ts-ignore
+    apiInstance.setApiKey(0, process.env.BREVO_API_KEY);
 
-    console.log(`[mail] SENT to ${payload.email} (messageId: ${info.messageId})`);
-    return { sent: true, id: info.messageId };
+    const sendSmtpEmail = new SendSmtpEmail();
+    sendSmtpEmail.subject = `Welcome to DPI Programming Club, ${payload.name}!`;
+    sendSmtpEmail.htmlContent = buildWelcomeHtml(payload);
+    sendSmtpEmail.sender = {
+      name: "DPI Programming Club",
+      email: "programmingclub09@gmail.com", // must be verified in Brevo
+    };
+    sendSmtpEmail.to = [{ email: payload.email, name: payload.name }];
+    sendSmtpEmail.textContent =
+      `Welcome to DPI Programming Club, ${payload.name}!\n\n` +
+      `Website: ${FRONTEND_URL}\n` +
+      `User ID: ${payload.email}\n` +
+      `Password: ${payload.password}\n\n` +
+      `Please change your password after your first login.`;
+
+    const result = await apiInstance.sendTransacEmail(sendSmtpEmail);
+
+    console.log(`[mail] SENT to ${payload.email}`);
+    return { sent: true, id: result.body?.messageId };
   } catch (err: any) {
-    console.error(`[mail] FAILED for ${payload.email}:`, err?.message || err);
-    return { sent: false, error: err?.message || "Unknown mail error" };
+    console.error(`[mail] FAILED:`, err?.response?.body || err?.message || err);
+    return {
+      sent: false,
+      error: err?.response?.body?.message || err?.message || "Unknown error",
+    };
   }
 };
