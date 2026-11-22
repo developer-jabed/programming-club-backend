@@ -1,16 +1,24 @@
-import { Resend } from "resend";
+// src/helper/mail.service.ts  (or your current path)
+import nodemailer from "nodemailer";
 
-// Put these in your .env (never hardcode the key):
-//   RESEND_API_KEY=re_xxxxxxxx
-//   EMAIL_FROM="DPI Programming Club <noreply@yourdomain.com>"
-//   FRONTEND_URL=https://programming-club-frontend.vercel.app
-const resend = new Resend(process.env.RESEND_API_KEY);
-
-const EMAIL_FROM = process.env.EMAIL_FROM || "onboarding@resend.dev";
 const FRONTEND_URL =
   process.env.FRONTEND_URL || "https://programming-club-frontend.vercel.app";
 
-// Prevents HTML injection through names / passwords inside the email
+const EMAIL_FROM =
+  process.env.EMAIL_FROM || "DPI Programming Club <programmingclub09@gmail.com>";
+
+// Create transporter once
+const transporter = nodemailer.createTransport({
+  host: "smtp-relay.brevo.com",
+  port: 587,
+  secure: false, // true for 465, false for 587
+  auth: {
+    user: process.env.BREVO_SMTP_USER,
+    pass: process.env.BREVO_SMTP_KEY,
+  },
+});
+
+// Prevents HTML injection
 const escapeHtml = (value: string): string =>
   value
     .replace(/&/g, "&amp;")
@@ -22,7 +30,7 @@ const escapeHtml = (value: string): string =>
 interface WelcomeEmailPayload {
   name: string;
   email: string;
-  password: string; // plain password, only used for this email
+  password: string;
 }
 
 const buildWelcomeHtml = ({ name, email, password }: WelcomeEmailPayload) => `
@@ -50,15 +58,29 @@ const buildWelcomeHtml = ({ name, email, password }: WelcomeEmailPayload) => `
   <p style="margin:0;color:#6b7280;font-size:13px;">Please keep your password safe and change it after your first login.</p>
 </div>`;
 
+export interface SendMailResult {
+  sent: boolean;
+  id?: string;
+  error?: string;
+}
+
 /**
- * Sends the welcome email. Never throws: a mail problem must not break user creation.
- * Returns true when Resend accepted the email.
+ * Sends the welcome email using Brevo SMTP.
+ * Never throws – a mail problem must not break user creation.
  */
 export const sendWelcomeEmail = async (
   payload: WelcomeEmailPayload
-): Promise<boolean> => {
+): Promise<SendMailResult> => {
+  if (!process.env.BREVO_SMTP_USER || !process.env.BREVO_SMTP_KEY) {
+    const message = "BREVO_SMTP_USER or BREVO_SMTP_KEY is not set";
+    console.error(`[mail] ${message}. Welcome email skipped.`);
+    return { sent: false, error: message };
+  }
+
+  console.log(`[mail] Sending welcome email to ${payload.email} (from: ${EMAIL_FROM})`);
+
   try {
-    const { error } = await resend.emails.send({
+    const info = await transporter.sendMail({
       from: EMAIL_FROM,
       to: payload.email,
       subject: `Welcome to DPI Programming Club, ${payload.name}!`,
@@ -71,13 +93,10 @@ export const sendWelcomeEmail = async (
         `Please change your password after your first login.`,
     });
 
-    if (error) {
-      console.error("[mail] Resend error:", error);
-      return false;
-    }
-    return true;
-  } catch (err) {
-    console.error("[mail] Failed to send welcome email:", err);
-    return false;
+    console.log(`[mail] SENT to ${payload.email} (messageId: ${info.messageId})`);
+    return { sent: true, id: info.messageId };
+  } catch (err: any) {
+    console.error(`[mail] FAILED for ${payload.email}:`, err?.message || err);
+    return { sent: false, error: err?.message || "Unknown mail error" };
   }
 };

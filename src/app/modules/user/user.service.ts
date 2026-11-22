@@ -147,7 +147,7 @@ const buildFilterCondition = (key: string, value: unknown): Prisma.UserWhereInpu
 const createUser = async (
   payload: IUserCreate,
   file?: MultipartFile
-): Promise<Partial<User>> => {
+): Promise<Partial<User> & { emailSent: boolean; emailError?: string }> => {
   const isExist = await prisma.user.findUnique({
     where: { email: payload.email },
   });
@@ -211,15 +211,27 @@ const createUser = async (
   }
 
   // Welcome email with login details. sendWelcomeEmail never throws, so a mail
-  // problem will not undo the created account. Not awaited: the API responds fast.
-  void sendWelcomeEmail({
+  // problem will not undo the created account. We await it to report the result.
+  const mail = await sendWelcomeEmail({
     name: result.name,
     email: result.email,
     password: payload.password, // plain password from the request, not the hash
   });
 
+  console.log(
+    `[createUser] user=${result.email} emailSent=${mail.sent}` +
+      (mail.error ? ` error=${mail.error}` : "")
+  );
+
   const { passwordHash, ...userWithoutPassword } = result;
-  return userWithoutPassword;
+  return {
+    ...userWithoutPassword,
+    emailSent: mail.sent,
+    // error details only outside production
+    ...(process.env.NODE_ENV !== "production" && mail.error
+      ? { emailError: mail.error }
+      : {}),
+  };
 };
 
 const getAllUsers = async (
