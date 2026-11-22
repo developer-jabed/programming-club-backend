@@ -1,5 +1,3 @@
-import { TransactionalEmailsApi, SendSmtpEmail } from "@getbrevo/brevo";
-
 const FRONTEND_URL =
   process.env.FRONTEND_URL || "https://programming-club-frontend.vercel.app";
 
@@ -51,7 +49,8 @@ export interface SendMailResult {
 export const sendWelcomeEmail = async (
   payload: WelcomeEmailPayload
 ): Promise<SendMailResult> => {
-  if (!process.env.BREVO_API_KEY) {
+  const apiKey = process.env.BREVO_API_KEY;
+  if (!apiKey) {
     console.error("[mail] BREVO_API_KEY is not set");
     return { sent: false, error: "BREVO_API_KEY is not set" };
   }
@@ -59,34 +58,44 @@ export const sendWelcomeEmail = async (
   console.log(`[mail] Sending welcome email to ${payload.email}`);
 
   try {
-    const apiInstance = new TransactionalEmailsApi();
-    // @ts-ignore
-    apiInstance.setApiKey(0, process.env.BREVO_API_KEY);
+    const res = await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+        "api-key": apiKey,
+      },
+      body: JSON.stringify({
+        sender: {
+          name: "DPI Programming Club",
+          email: "programmingclub09@gmail.com", // must be verified in Brevo
+        },
+        to: [{ email: payload.email, name: payload.name }],
+        subject: `Welcome to DPI Programming Club, ${payload.name}!`,
+        htmlContent: buildWelcomeHtml(payload),
+        textContent:
+          `Welcome to DPI Programming Club, ${payload.name}!\n\n` +
+          `Website: ${FRONTEND_URL}\n` +
+          `User ID: ${payload.email}\n` +
+          `Password: ${payload.password}\n\n` +
+          `Please change your password after your first login.`,
+      }),
+    });
 
-    const sendSmtpEmail = new SendSmtpEmail();
-    sendSmtpEmail.subject = `Welcome to DPI Programming Club, ${payload.name}!`;
-    sendSmtpEmail.htmlContent = buildWelcomeHtml(payload);
-    sendSmtpEmail.sender = {
-      name: "DPI Programming Club",
-      email: "programmingclub09@gmail.com", // must be verified in Brevo
-    };
-    sendSmtpEmail.to = [{ email: payload.email, name: payload.name }];
-    sendSmtpEmail.textContent =
-      `Welcome to DPI Programming Club, ${payload.name}!\n\n` +
-      `Website: ${FRONTEND_URL}\n` +
-      `User ID: ${payload.email}\n` +
-      `Password: ${payload.password}\n\n` +
-      `Please change your password after your first login.`;
+    const data: any = await res.json().catch(() => ({}));
 
-    const result = await apiInstance.sendTransacEmail(sendSmtpEmail);
+    if (!res.ok) {
+      console.error(`[mail] FAILED (${res.status}):`, data);
+      return {
+        sent: false,
+        error: data?.message || `Brevo responded with ${res.status}`,
+      };
+    }
 
     console.log(`[mail] SENT to ${payload.email}`);
-    return { sent: true, id: result.body?.messageId };
+    return { sent: true, id: data?.messageId };
   } catch (err: any) {
-    console.error(`[mail] FAILED:`, err?.response?.body || err?.message || err);
-    return {
-      sent: false,
-      error: err?.response?.body?.message || err?.message || "Unknown error",
-    };
+    console.error(`[mail] FAILED:`, err?.message || err);
+    return { sent: false, error: err?.message || "Unknown error" };
   }
 };
