@@ -18,16 +18,27 @@ export type PreferenceKey =
 
 // Types that really exist in your Prisma enum
 const VALID_TYPES = new Set<string>(Object.values(NotificationType));
-// Known to exist (used elsewhere in your code); used when a type isn't in the enum
+
+// Used when a type isn't in the enum yet (e.g. migration not applied)
 const FALLBACK_TYPE = NotificationType.TASK_STATUS_CHANGED;
+
+// Better fallbacks for types that have nothing to do with tasks.
+// Keyed by string so this compiles before the enum value exists.
+const TYPE_FALLBACKS: Record<string, NotificationType> = {
+  PAYMENT_RECEIVED: NotificationType.SYSTEM,
+};
 
 const resolveType = (type: NotificationType): NotificationType => {
   if (VALID_TYPES.has(type)) return type;
+  const fallback = TYPE_FALLBACKS[type] ?? FALLBACK_TYPE;
   console.warn(
-    `[NotificationService] "${type}" is not in the NotificationType enum, using ${FALLBACK_TYPE}. Add it to schema.prisma to fix.`
+    `[NotificationService] "${type}" is not in the NotificationType enum, using ${fallback}. Add it to schema.prisma to fix.`
   );
-  return FALLBACK_TYPE;
+  return fallback;
 };
+
+// Only these columns may be used for sorting (sortBy comes from the query string)
+const SORTABLE_FIELDS = new Set(["createdAt", "readAt", "isRead", "type", "title"]);
 
 const createNotification = async (payload: ICreateNotification) => {
   return prisma.notification.create({
@@ -127,12 +138,18 @@ const getMyNotifications = async (
     ...(filters.type && { type: filters.type }),
   };
 
+  // Never pass a raw query-string field into orderBy: an unknown column would
+  // make Prisma throw (500). Fall back to createdAt / desc.
+  const orderField = sortBy && SORTABLE_FIELDS.has(sortBy) ? sortBy : "createdAt";
+  const orderDir = sortOrder === "asc" ? "asc" : "desc";
+
   const [data, total] = await Promise.all([
     prisma.notification.findMany({
       where,
       skip,
       take,
-      orderBy: { [sortBy || "createdAt"]: sortOrder || "desc" },
+      // id tiebreaker keeps paging stable when many rows share a timestamp
+      orderBy: [{ [orderField]: orderDir }, { id: "desc" }],
     }),
     prisma.notification.count({ where }),
   ]);
@@ -164,6 +181,9 @@ const markAsRead = async (notificationId: string, userId: string) => {
   if (notification.userId !== userId) {
     throw new ApiError(httpStatus.FORBIDDEN, "You cannot access this notification");
   }
+
+  // Idempotent: keep the original readAt if it was already read
+  if (notification.isRead) return notification;
 
   return prisma.notification.update({
     where: { id: notificationId },

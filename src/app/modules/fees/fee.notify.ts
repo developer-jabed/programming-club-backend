@@ -1,6 +1,7 @@
+import { NotificationType } from "@prisma/client";
 import { prisma } from "../../shared/prisma.js";
 import { sendPaymentReceiptEmail } from "../user/mail.service.js";
-import { NotificationType } from "@prisma/client";
+import { NotificationService } from "../notification/notification.service.js"; // adjust path if different
 
 const MONTHS = [
   "January", "February", "March", "April", "May", "June",
@@ -21,7 +22,7 @@ type PaymentForNotify = {
 
 /**
  * Notify a member that a payment was recorded for them:
- *  - in-app notification (if inAppEnabled)
+ *  - in-app notification (via NotificationService, which already honours inAppEnabled)
  *  - receipt email (if emailEnabled and the user has an email)
  *
  * Never throws: a notification failure must not affect the payment itself.
@@ -30,15 +31,17 @@ export async function notifyPaymentReceived(p: PaymentForNotify): Promise<void> 
   try {
     const [user, prefs, dueRow] = await Promise.all([
       prisma.user.findUnique({ where: { id: p.user.id }, select: { id: true, name: true, email: true } }),
-      prisma.notificationPreference.findUnique({ where: { userId: p.user.id } }),
+      prisma.notificationPreference.findUnique({
+        where: { userId: p.user.id },
+        select: { emailEnabled: true },
+      }),
       p.dueId
         ? prisma.due.findUnique({ where: { id: p.dueId }, select: { amount: true, paidAmount: true } })
         : null,
     ]);
     if (!user) return;
 
-    // No preference row yet → defaults are all enabled
-    const inAppEnabled = prefs?.inAppEnabled ?? true;
+    // No preference row yet → defaults to enabled
     const emailEnabled = prefs?.emailEnabled ?? true;
 
     const dueLabel = p.due
@@ -55,33 +58,27 @@ export async function notifyPaymentReceived(p: PaymentForNotify): Promise<void> 
           }
         : null;
 
-    const tasks: Promise<unknown>[] = [];
-
-    if (inAppEnabled) {
-      tasks.push(
-        prisma.notification.create({
-          data: {
-            userId: user.id,
-            type: NotificationType.PAYMENT_RECEIVED,
-            channel: "IN_APP",
-            title: "Payment received",
-            body:
-              `৳${p.amount.toLocaleString("en-BD")} received for ${dueLabel ?? p.category.name}. ` +
-              `Receipt ${p.receipt}.` +
-              (due ? (due.remaining > 0 ? ` ৳${due.remaining.toLocaleString("en-BD")} still due.` : " Fully paid.") : ""),
-            entityType: "PAYMENT",
-            entityId: p.id,
-            metadata: {
-              receipt: p.receipt,
-              amount: p.amount,
-              categoryName: p.category.name,
-              dueId: p.dueId,
-              remaining: due?.remaining ?? null,
-            },
-          },
-        })
-      );
-    }
+    const tasks: Promise<unknown>[] = [
+      // notifySafe checks inAppEnabled itself and never throws
+      NotificationService.notifySafe({
+        userId: user.id,
+        type: NotificationType.PAYMENT_RECEIVED,
+        title: "Payment received",
+        body:
+          `৳${p.amount.toLocaleString("en-BD")} received for ${dueLabel ?? p.category.name}. ` +
+          `Receipt ${p.receipt}.` +
+          (due ? (due.remaining > 0 ? ` ৳${due.remaining.toLocaleString("en-BD")} still due.` : " Fully paid.") : ""),
+        entityType: "PAYMENT",
+        entityId: p.id,
+        metadata: {
+          receipt: p.receipt,
+          amount: p.amount,
+          categoryName: p.category.name,
+          dueId: p.dueId,
+          remaining: due?.remaining ?? null,
+        },
+      }),
+    ];
 
     if (emailEnabled && user.email) {
       tasks.push(
