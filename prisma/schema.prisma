@@ -198,11 +198,17 @@ model User {
   resolvedFeatureRequests  FeatureRequest[]      @relation("FeatureRequestResolver")
   featureRequestReplies    FeatureRequestReply[]
   featureUpdates           FeatureUpdate[]       @relation("FeatureUpdateAuthor")
+  dues              Due[]
+  createdDues       Due[]      @relation("DueCreator")
+  payments          Payment[]  @relation("PaymentPayer")
+  receivedPayments  Payment[]  @relation("PaymentReceiver")
+  voidedPayments    Payment[]  @relation("PaymentVoider")
 
   @@index([role, status])
   @@index([email])
   @@index([group, semester])
   @@map("users")
+
 }
 
 model Sector {
@@ -710,4 +716,110 @@ model FeatureUpdate {
   @@index([visibility, isPinned])
   @@index([authorId])
   @@map("feature_updates")
+}
+
+
+// ─────────────────────────────────────────────
+// Payments (offline / cash, recorded by admin)
+// ─────────────────────────────────────────────
+
+enum PaymentCategoryType {
+  MONTHLY     // recurring, one due per month
+  ONE_TIME    // admission, event fee, fine, donation, etc.
+}
+
+enum DueStatus {
+  UNPAID
+  PARTIAL
+  PAID
+  WAIVED
+}
+
+enum PaymentStatus {
+  RECEIVED
+  VOIDED      // recorded by mistake; reverses the due
+}
+
+// What the money is for: "Monthly Fee", "Admission", "Event Fee", "Fine"...
+model PaymentCategory {
+  id          String              @id @default(cuid())
+  name        String              @unique
+  slug        String              @unique
+  description String?
+  type        PaymentCategoryType @default(ONE_TIME)
+  amount      Int                 @default(0) // default amount in BDT, can be overridden per due
+  isActive    Boolean             @default(true)
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  dues        Due[]
+  payments    Payment[]
+
+  @@map("payment_categories")
+}
+
+// What a member owes (one row per member, category and month)
+model Due {
+  id          String          @id @default(cuid())
+  userId      String
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  categoryId  String
+  category    PaymentCategory @relation(fields: [categoryId], references: [id])
+
+  title       String?         // e.g. "Hackathon 2026 entry fee"
+  year        Int?            // set for MONTHLY dues
+  month       Int?            // 1-12, set for MONTHLY dues
+  amount      Int
+  paidAmount  Int             @default(0)
+  status      DueStatus       @default(UNPAID)
+  dueDate     DateTime?
+  note        String?
+
+  createdById String?
+  createdBy   User?           @relation("DueCreator", fields: [createdById], references: [id])
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  payments    Payment[]
+
+  @@unique([userId, categoryId, year, month]) // blocks duplicate monthly dues
+  @@index([userId, status])
+  @@index([categoryId, year, month])
+  @@index([status, dueDate])
+  @@map("dues")
+}
+
+
+model Payment {
+  id           String          @id @default(cuid())
+  receiptNo    Int             @unique @default(autoincrement())
+
+  userId       String          // who paid
+  user         User            @relation("PaymentPayer", fields: [userId], references: [id])
+  categoryId   String
+  category     PaymentCategory @relation(fields: [categoryId], references: [id])
+  dueId        String?         // null for standalone payments (donation, etc.)
+  due          Due?            @relation(fields: [dueId], references: [id], onDelete: SetNull)
+
+  amount       Int
+  status       PaymentStatus   @default(RECEIVED)
+  paidAt       DateTime        @default(now())
+  note         String?
+
+  receivedById String          // admin/moderator who collected the cash
+  receivedBy   User            @relation("PaymentReceiver", fields: [receivedById], references: [id])
+
+  voidedAt     DateTime?
+  voidedById   String?
+  voidedBy     User?           @relation("PaymentVoider", fields: [voidedById], references: [id])
+  voidReason   String?
+
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  @@index([userId, paidAt])
+  @@index([dueId])
+  @@index([categoryId, paidAt])
+  @@index([receivedById, paidAt])
+  @@map("payments")
 }

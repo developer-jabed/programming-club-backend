@@ -11,6 +11,7 @@ import analyticsRoutes from "../modules/analytics/analytics.route.js";
 import sectorRoutes from "../modules/sector/sector.route.js";
 import taskSubmissionRoutes from "../modules/taskSubmission/task.routes.js";
 import featureRoutes from "../modules/features/feature.route.js";
+import feeRoutes from "../modules/fees/fees.route.js";
 
 
 async function registerRoutes(fastify: FastifyInstance): Promise<void> {
@@ -72,6 +73,10 @@ async function registerRoutes(fastify: FastifyInstance): Promise<void> {
   });
   fastify.register(featureRoutes, {
     prefix: "/features"
+  });
+
+  fastify.register(feeRoutes, {
+    prefix: "/fees"
   });
 }
 
