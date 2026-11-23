@@ -1,6 +1,7 @@
 import { Prisma, DueStatus } from "@prisma/client";
 import { prisma } from "../../shared/prisma.js";
 import { cached, invalidate } from "./fee.cache.js";
+import { notifyPaymentReceived } from "./fee.notify.js";
 import type {
   ICreateDues,
   IDuesQuery,
@@ -394,7 +395,15 @@ async function recordPayment(input: IRecordPayment, actor: Actor) {
   );
 
   invalidate(K.dues, K.pay, K.sum);
-  return withReceipt(payment);
+
+  const result = withReceipt(payment);
+
+  // Receipt email + in-app notification for the member.
+  // Fire-and-forget: runs after the commit and never throws, so a mail/notification
+  // failure can't fail or slow down the payment.
+  void notifyPaymentReceived(result);
+
+  return result;
 }
 
 async function voidPayment(id: string, reason: string, actor: Actor) {

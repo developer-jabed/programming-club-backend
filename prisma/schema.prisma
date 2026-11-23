@@ -148,6 +148,7 @@ enum NotificationType {
   SECTOR_JOINED
   SYSTEM
   REMINDER
+  PAYMENT_RECEIVED
 }
 
 enum NotificationChannel {
