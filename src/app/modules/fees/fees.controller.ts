@@ -38,7 +38,7 @@ const createCategory = async (
   return sendResponse(reply, {
     statusCode: httpStatus.CREATED,
     success: true,
-    message: "Category created successfully",
+    message: "Category created successfully  00",
     data: result,
   });
 };
@@ -189,7 +189,7 @@ const voidPayment = async (
   return sendResponse(reply, {
     statusCode: httpStatus.OK,
     success: true,
-    message: "Payment voided successfully",
+    message: "Payment voided  successfully",
     data: result,
   });
 };
