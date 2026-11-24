@@ -1,6 +1,6 @@
 import bcrypt from "bcrypt";
 import httpStatus from "http-status";
-import { UserStatus } from "@prisma/client";
+import { UserStatus, NotificationType } from "@prisma/client";
 import type {
   IChangePasswordRequest,
   ILoginRequest,
@@ -16,6 +16,7 @@ import {
   REFRESH_TOKEN_EXPIRES_IN,
 } from "./auth.constants.js";
 import config from "../../config/index.js";
+import { NotificationService } from "../notification/notification.service.js";
 
 const loginUser = async (payload: ILoginRequest): Promise<ILoginResponse> => {
   const { email, password } = payload;
@@ -161,7 +162,22 @@ const changePassword = async (
     where: { id: user.id },
     data: { passwordHash: hashedPassword },
   });
+
+  // ── Classy security notification ───────────────────────────
+  void NotificationService.notifySafe({
+    userId: user.id,
+    type: NotificationType.SYSTEM,
+    title: "Password Changed",
+    body: "Your password was changed successfully. If this wasn't you, please contact support immediately.",
+    entityType: "User",
+    entityId: user.id,
+    metadata: {
+      action: "PASSWORD_CHANGED",
+      changedAt: new Date().toISOString(),
+    },
+  });
 };
+
 
 const getMe = async (userPayload: JwtPayload) => {
   const user = await prisma.user.findUnique({

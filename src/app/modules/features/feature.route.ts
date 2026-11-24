@@ -15,49 +15,63 @@ import type {
 export default async function featureRoutes(fastify: FastifyInstance) {
   // ==================== Feature Requests ====================
 
-  // Create feature request
   fastify.post<{ Body: ICreateFeatureRequest }>(
     "/requests",
     {
-      preHandler: [auth(), validateRequest(FeatureValidation.createFeatureRequest)],
+      preHandler: [
+        auth(),
+        validateRequest(FeatureValidation.createFeatureRequest),
+      ],
     },
     FeatureController.createFeatureRequest
   );
 
-  // Get all feature requests (optional auth)
+  // Optional auth so hasVoted can be set when logged in
   fastify.get(
     "/requests",
- 
+    {
+      // If your auth() does not support optional, leave preHandler empty
+      // and rely on req.user being undefined when not logged in.
+      preHandler: [],
+    },
     FeatureController.getFeatureRequests
   );
 
-  // Get single feature request
   fastify.get<{ Params: { id: string } }>(
     "/requests/:id",
-  
+    { preHandler: [] },
     FeatureController.getFeatureRequestById
   );
 
-  // Update feature request (owner or admin)
   fastify.patch<{ Params: { id: string }; Body: IUpdateFeatureRequest }>(
     "/requests/:id",
     {
-      preHandler: [auth(), validateRequest(FeatureValidation.updateFeatureRequest)],
+      preHandler: [
+        auth(),
+        validateRequest(FeatureValidation.updateFeatureRequest),
+      ],
     },
     FeatureController.updateFeatureRequest
   );
 
-  // Delete feature request
   fastify.delete<{ Params: { id: string } }>(
     "/requests/:id",
-    {
-      preHandler: [auth()],
-    },
+    { preHandler: [auth()] },
     FeatureController.deleteFeatureRequest
   );
 
-  // Add reply
-  fastify.post<{ Params: { id: string }; Body: ICreateFeatureRequestReply }>(
+  // Vote toggle
+  fastify.post<{ Params: { id: string } }>(
+    "/requests/:id/vote",
+    { preHandler: [auth()] },
+    FeatureController.toggleVote
+  );
+
+  // Replies – any authenticated member
+  fastify.post<{
+    Params: { id: string };
+    Body: ICreateFeatureRequestReply;
+  }>(
     "/requests/:id/replies",
     {
       preHandler: [auth(), validateRequest(FeatureValidation.createReply)],
@@ -65,18 +79,14 @@ export default async function featureRoutes(fastify: FastifyInstance) {
     FeatureController.createReply
   );
 
-  // Delete reply
   fastify.delete<{ Params: { replyId: string } }>(
     "/replies/:replyId",
-    {
-      preHandler: [auth()],
-    },
+    { preHandler: [auth()] },
     FeatureController.deleteReply
   );
 
-  // ==================== Feature Updates / Technical Reports ====================
+  // ==================== Feature Updates ====================
 
-  // Create update (Admin / Moderator only)
   fastify.post<{ Body: ICreateFeatureUpdate }>(
     "/updates",
     {
@@ -88,21 +98,13 @@ export default async function featureRoutes(fastify: FastifyInstance) {
     FeatureController.createFeatureUpdate
   );
 
-  // Get all updates
-  fastify.get(
-    "/updates",
- 
-    FeatureController.getFeatureUpdates
-  );
+  fastify.get("/updates", FeatureController.getFeatureUpdates);
 
-  // Get single update
   fastify.get<{ Params: { id: string } }>(
     "/updates/:id",
-   
     FeatureController.getFeatureUpdateById
   );
 
-  // Update
   fastify.patch<{ Params: { id: string }; Body: IUpdateFeatureUpdate }>(
     "/updates/:id",
     {
@@ -114,7 +116,6 @@ export default async function featureRoutes(fastify: FastifyInstance) {
     FeatureController.updateFeatureUpdate
   );
 
-  // Delete
   fastify.delete<{ Params: { id: string } }>(
     "/updates/:id",
     {
@@ -122,4 +123,4 @@ export default async function featureRoutes(fastify: FastifyInstance) {
     },
     FeatureController.deleteFeatureUpdate
   );
-} 
+}

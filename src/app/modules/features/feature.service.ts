@@ -1,4 +1,4 @@
-import { Prisma, UserRole, FeatureRequestStatus } from "@prisma/client";
+import { Prisma, UserRole, FeatureRequestStatus, NotificationType } from "@prisma/client";
 import httpStatus from "http-status";
 import ApiError from "../../errors/api.error.js";
 import { prisma } from "../../shared/prisma.js";
@@ -15,12 +15,43 @@ import type {
   IUpdateFeatureUpdate,
   IFeatureRequestQuery,
 } from "./feature.interface.js";
+import { NotificationService } from "../notification/notification.service.js"; // ← add this
 
-// JwtPayload.role এখন string, তাই এখানেও string ধরা হয়েছে
 const isAdminRole = (role: string) =>
   role === UserRole.ADMIN || role === UserRole.MODERATOR;
 
-const createFeatureRequest = async (userId: string, payload: ICreateFeatureRequest) => {
+/** Normalize list/detail shape: expose votes + hasVoted */
+const mapRequest = (r: any) => {
+  const hasVoted = Array.isArray(r.voteRecords) ? r.voteRecords.length > 0 : false;
+  const { voteRecords, ...rest } = r;
+  return {
+    ...rest,
+    votes: r.votes ?? 0,
+    hasVoted,
+  };
+};
+
+// ────────────────────────────────────────────────
+// Helper: get all admin + moderator user IDs
+// ────────────────────────────────────────────────
+const getAdminModeratorIds = async (): Promise<string[]> => {
+  const users = await prisma.user.findMany({
+    where: {
+      role: { in: [UserRole.ADMIN, UserRole.MODERATOR] },
+    },
+    select: { id: true },
+  });
+  return users.map((u) => u.id);
+};
+
+// ═════════════════════════════════════════════════════════════
+// Feature Requests
+// ═════════════════════════════════════════════════════════════
+
+const createFeatureRequest = async (
+  userId: string,
+  payload: ICreateFeatureRequest
+) => {
   const data = await prisma.featureRequest.create({
     data: {
       ...payload,
@@ -32,16 +63,42 @@ const createFeatureRequest = async (userId: string, payload: ICreateFeatureReque
       },
       sector: { select: { id: true, name: true, slug: true } },
       project: { select: { id: true, title: true } },
+      _count: { select: { replies: true } },
     },
   });
 
-  return data;
+  // ── Notify admins & moderators ─────────────────────────────
+  const adminIds = await getAdminModeratorIds();
+  const targets = adminIds.filter((id) => id !== userId); // don't notify the creator
+
+  if (targets.length > 0) {
+    await NotificationService.notifyManySafe(
+      targets,
+      {
+        type: NotificationType.SYSTEM,
+        title: "New Feature Request",
+        body: `"${data.title}" was submitted by ${data.createdBy.name}`,
+        entityType: "FeatureRequest",
+        entityId: data.id,
+        metadata: {
+          status: data.status,
+          priority: data.priority,
+          sectorId: data.sectorId,
+          projectId: data.projectId,
+        },
+      }
+      // no preference key → only respects inAppEnabled
+    );
+  }
+
+  return { ...data, votes: 0, hasVoted: false };
 };
 
 const getFeatureRequests = async (
   filters: IFeatureRequestQuery & PaginationQuery,
   currentUser?: { id: string; role: string }
 ) => {
+  // ... keep your existing implementation unchanged ...
   const pagination = calculatePagination(filters, "createdAt");
   const { skip, take, sortBy, sortOrder } = pagination;
 
@@ -51,7 +108,8 @@ const getFeatureRequests = async (
   if (filters.priority) andConditions.push({ priority: filters.priority });
   if (filters.sectorId) andConditions.push({ sectorId: filters.sectorId });
   if (filters.projectId) andConditions.push({ projectId: filters.projectId });
-  if (filters.createdById) andConditions.push({ createdById: filters.createdById });
+  if (filters.createdById)
+    andConditions.push({ createdById: filters.createdById });
 
   if (filters.search) {
     andConditions.push({
@@ -65,7 +123,7 @@ const getFeatureRequests = async (
   const where: Prisma.FeatureRequestWhereInput =
     andConditions.length > 0 ? { AND: andConditions } : {};
 
-  const [data, total] = await Promise.all([
+  const [rows, total] = await Promise.all([
     prisma.featureRequest.findMany({
       where,
       skip,
@@ -81,18 +139,31 @@ const getFeatureRequests = async (
         sector: { select: { id: true, name: true, slug: true } },
         project: { select: { id: true, title: true } },
         _count: { select: { replies: true } },
+        ...(currentUser?.id
+          ? {
+              voteRecords: {
+                where: { userId: currentUser.id },
+                select: { id: true },
+                take: 1,
+              },
+            }
+          : {}),
       },
     }),
     prisma.featureRequest.count({ where }),
   ]);
 
   return {
-    meta: buildPaginationMeta(total, pagination), // ← fix: ২টা argument
-    data,
+    meta: buildPaginationMeta(total, pagination),
+    data: rows.map(mapRequest),
   };
 };
 
-const getFeatureRequestById = async (id: string) => {
+const getFeatureRequestById = async (
+  id: string,
+  currentUser?: { id: string; role: string }
+) => {
+  // ... keep existing implementation unchanged ...
   const data = await prisma.featureRequest.findUnique({
     where: { id },
     include: {
@@ -109,7 +180,12 @@ const getFeatureRequestById = async (id: string) => {
         orderBy: { createdAt: "asc" },
         include: {
           author: {
-            select: { id: true, name: true, profilePicture: true, role: true },
+            select: {
+              id: true,
+              name: true,
+              profilePicture: true,
+              role: true,
+            },
           },
         },
       },
@@ -124,6 +200,16 @@ const getFeatureRequestById = async (id: string) => {
           createdAt: true,
         },
       },
+      _count: { select: { replies: true } },
+      ...(currentUser?.id
+        ? {
+            voteRecords: {
+              where: { userId: currentUser.id },
+              select: { id: true },
+              take: 1,
+            },
+          }
+        : {}),
     },
   });
 
@@ -131,7 +217,7 @@ const getFeatureRequestById = async (id: string) => {
     throw new ApiError(httpStatus.NOT_FOUND, "Feature request not found");
   }
 
-  return data;
+  return mapRequest(data);
 };
 
 const updateFeatureRequest = async (
@@ -149,26 +235,26 @@ const updateFeatureRequest = async (
   const isAdmin = isAdminRole(role);
   const isOwner = existing.createdById === userId;
 
-  // Only owner can edit title/description (if still OPEN)
-  // Only admin/moderator can change status / adminNote
   if (!isAdmin && !isOwner) {
-    throw new ApiError(httpStatus.FORBIDDEN, "You are not allowed to update this request");
+    throw new ApiError(
+      httpStatus.FORBIDDEN,
+      "You are not allowed to update this request"
+    );
   }
 
   if (!isAdmin) {
-    // Member can only update title & description while status is OPEN
     if (existing.status !== FeatureRequestStatus.OPEN) {
-      throw new ApiError(httpStatus.FORBIDDEN, "You can only edit open requests");
+      throw new ApiError(
+        httpStatus.FORBIDDEN,
+        "You can only edit open requests"
+      );
     }
-
-    // Strip admin-only fields
     delete (payload as any).status;
     delete (payload as any).adminNote;
   }
 
   const data: Prisma.FeatureRequestUpdateInput = { ...payload };
 
-  // Auto set resolved info
   if (
     payload.status === FeatureRequestStatus.COMPLETED ||
     payload.status === FeatureRequestStatus.REJECTED
@@ -187,13 +273,42 @@ const updateFeatureRequest = async (
       resolvedBy: {
         select: { id: true, name: true, profilePicture: true },
       },
+      _count: { select: { replies: true } },
     },
   });
 
-  return updated;
+  // ── Notify creator when status changes ─────────────────────
+  if (
+    payload.status &&
+    payload.status !== existing.status &&
+    existing.createdById !== userId
+  ) {
+    const statusLabel = payload.status.replace(/_/g, " ").toLowerCase();
+
+    await NotificationService.notifySafe({
+      userId: existing.createdById,
+      type: NotificationType.SYSTEM,
+      title: "Feature Request Status Updated",
+      body: `Your request "${existing.title}" is now ${statusLabel}.`,
+      entityType: "FeatureRequest",
+      entityId: id,
+      metadata: {
+        previousStatus: existing.status,
+        newStatus: payload.status,
+        adminNote: payload.adminNote ?? null,
+      },
+    });
+  }
+
+  return { ...updated, votes: updated.votes ?? 0, hasVoted: false };
 };
 
-const deleteFeatureRequest = async (id: string, userId: string, role: string) => {
+const deleteFeatureRequest = async (
+  id: string,
+  userId: string,
+  role: string
+) => {
+  // ... keep existing implementation unchanged ...
   const existing = await prisma.featureRequest.findUnique({ where: { id } });
 
   if (!existing) {
@@ -204,14 +319,65 @@ const deleteFeatureRequest = async (id: string, userId: string, role: string) =>
   const isOwner = existing.createdById === userId;
 
   if (!isAdmin && !isOwner) {
-    throw new ApiError(httpStatus.FORBIDDEN, "You are not allowed to delete this request");
+    throw new ApiError(
+      httpStatus.FORBIDDEN,
+      "You are not allowed to delete this request"
+    );
   }
 
-  // Hard delete
   await prisma.featureRequest.delete({ where: { id } });
 
   return { message: "Feature request deleted successfully" };
 };
+
+// ═════════════════════════════════════════════════════════════
+// Votes
+// ═════════════════════════════════════════════════════════════
+
+const toggleVote = async (featureRequestId: string, userId: string) => {
+  // ... keep existing implementation unchanged ...
+  const request = await prisma.featureRequest.findUnique({
+    where: { id: featureRequestId },
+    select: { id: true, votes: true },
+  });
+
+  if (!request) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Feature request not found");
+  }
+
+  const existing = await prisma.featureRequestVote.findUnique({
+    where: {
+      featureRequestId_userId: { featureRequestId, userId },
+    },
+  });
+
+  if (existing) {
+    await prisma.$transaction([
+      prisma.featureRequestVote.delete({ where: { id: existing.id } }),
+      prisma.featureRequest.update({
+        where: { id: featureRequestId },
+        data: { votes: { decrement: 1 } },
+      }),
+    ]);
+    return { voted: false, votes: Math.max(0, request.votes - 1) };
+  }
+
+  await prisma.$transaction([
+    prisma.featureRequestVote.create({
+      data: { featureRequestId, userId },
+    }),
+    prisma.featureRequest.update({
+      where: { id: featureRequestId },
+      data: { votes: { increment: 1 } },
+    }),
+  ]);
+
+  return { voted: true, votes: request.votes + 1 };
+};
+
+// ═════════════════════════════════════════════════════════════
+// Replies
+// ═════════════════════════════════════════════════════════════
 
 const createReply = async (
   featureRequestId: string,
@@ -221,6 +387,11 @@ const createReply = async (
 ) => {
   const request = await prisma.featureRequest.findUnique({
     where: { id: featureRequestId },
+    select: {
+      id: true,
+      title: true,
+      createdById: true,
+    },
   });
 
   if (!request) {
@@ -242,10 +413,48 @@ const createReply = async (
     },
   });
 
+  // ── Collect people who should be notified ──────────────────
+  const notifyIds = new Set<string>();
+
+  // Always notify the request creator (unless they are the one replying)
+  if (request.createdById !== userId) {
+    notifyIds.add(request.createdById);
+  }
+
+  // If this is a nested reply, also notify the parent author
+  if (payload.parentReplyId) {
+    const parent = await prisma.featureRequestReply.findUnique({
+      where: { id: payload.parentReplyId },
+      select: { authorId: true },
+    });
+    if (parent && parent.authorId !== userId) {
+      notifyIds.add(parent.authorId);
+    }
+  }
+
+  if (notifyIds.size > 0) {
+    await NotificationService.notifyManySafe(
+      Array.from(notifyIds),
+      {
+        type: NotificationType.SYSTEM,
+        title: "New Reply on Feature Request",
+        body: `${reply.author.name} replied to "${request.title}"`,
+        entityType: "FeatureRequest",
+        entityId: featureRequestId,
+        metadata: {
+          replyId: reply.id,
+          isAdminReply: reply.isAdminReply,
+          parentReplyId: payload.parentReplyId ?? null,
+        },
+      }
+    );
+  }
+
   return reply;
 };
 
 const deleteReply = async (replyId: string, userId: string, role: string) => {
+  // ... keep existing implementation unchanged ...
   const reply = await prisma.featureRequestReply.findUnique({
     where: { id: replyId },
   });
@@ -258,10 +467,12 @@ const deleteReply = async (replyId: string, userId: string, role: string) => {
   const isOwner = reply.authorId === userId;
 
   if (!isAdmin && !isOwner) {
-    throw new ApiError(httpStatus.FORBIDDEN, "You are not allowed to delete this reply");
+    throw new ApiError(
+      httpStatus.FORBIDDEN,
+      "You are not allowed to delete this reply"
+    );
   }
 
-  // Soft delete
   await prisma.featureRequestReply.update({
     where: { id: replyId },
     data: { deletedAt: new Date() },
@@ -270,7 +481,9 @@ const deleteReply = async (replyId: string, userId: string, role: string) => {
   return { message: "Reply deleted successfully" };
 };
 
-// ==================== Feature Updates ====================
+// ═════════════════════════════════════════════════════════════
+// Feature Updates
+// ═════════════════════════════════════════════════════════════
 
 const createFeatureUpdate = async (
   userId: string,
@@ -278,25 +491,50 @@ const createFeatureUpdate = async (
   payload: ICreateFeatureUpdate
 ) => {
   if (!isAdminRole(role)) {
-    throw new ApiError(httpStatus.FORBIDDEN, "Only admins can create feature updates");
+    throw new ApiError(
+      httpStatus.FORBIDDEN,
+      "Only admins can create feature updates"
+    );
   }
 
   const data = await prisma.featureUpdate.create({
     data: {
       ...payload,
       authorId: userId,
-      publishedAt: payload.publishedAt ? new Date(payload.publishedAt) : new Date(),
+      publishedAt: payload.publishedAt
+        ? new Date(payload.publishedAt)
+        : new Date(),
     },
     include: {
       author: {
         select: { id: true, name: true, profilePicture: true, role: true },
       },
       relatedFeatureRequest: {
-        select: { id: true, title: true, status: true },
+        select: { id: true, title: true, status: true, createdById: true },
       },
       sector: { select: { id: true, name: true, slug: true } },
     },
   });
+
+  // ── Notify the linked feature request creator ──────────────
+  if (
+    data.relatedFeatureRequest &&
+    data.relatedFeatureRequest.createdById !== userId
+  ) {
+    await NotificationService.notifySafe({
+      userId: data.relatedFeatureRequest.createdById,
+      type: NotificationType.SYSTEM,
+      title: "Update on Your Feature Request",
+      body: `A new update "${data.title}" was published for "${data.relatedFeatureRequest.title}"`,
+      entityType: "FeatureUpdate",
+      entityId: data.id,
+      metadata: {
+        featureRequestId: data.relatedFeatureRequest.id,
+        updateType: data.type,
+        version: data.version,
+      },
+    });
+  }
 
   return data;
 };
@@ -304,12 +542,11 @@ const createFeatureUpdate = async (
 const getFeatureUpdates = async (
   filters: PaginationQuery & { type?: string; visibility?: string }
 ) => {
-  // default sort publishedAt, কারণ নিচে আগে isPinned দিয়ে sort হচ্ছে
+  // ... keep existing implementation unchanged ...
   const pagination = calculatePagination(filters, "publishedAt");
   const { skip, take, sortBy, sortOrder } = pagination;
 
   const where: Prisma.FeatureUpdateWhereInput = {
-    // By default show only public + members_only (adjust as needed)
     visibility: { in: ["PUBLIC", "MEMBERS_ONLY"] },
   };
 
@@ -336,12 +573,13 @@ const getFeatureUpdates = async (
   ]);
 
   return {
-    meta: buildPaginationMeta(total, pagination), // ← fix: ২টা argument
+    meta: buildPaginationMeta(total, pagination),
     data,
   };
 };
 
 const getFeatureUpdateById = async (id: string) => {
+  // ... keep existing implementation unchanged ...
   const data = await prisma.featureUpdate.findUnique({
     where: { id },
     include: {
@@ -368,8 +606,12 @@ const updateFeatureUpdate = async (
   role: string,
   payload: IUpdateFeatureUpdate
 ) => {
+  // ... keep existing implementation unchanged ...
   if (!isAdminRole(role)) {
-    throw new ApiError(httpStatus.FORBIDDEN, "Only admins can update feature updates");
+    throw new ApiError(
+      httpStatus.FORBIDDEN,
+      "Only admins can update feature updates"
+    );
   }
 
   const existing = await prisma.featureUpdate.findUnique({ where: { id } });
@@ -381,7 +623,9 @@ const updateFeatureUpdate = async (
     where: { id },
     data: {
       ...payload,
-      publishedAt: payload.publishedAt ? new Date(payload.publishedAt) : undefined,
+      publishedAt: payload.publishedAt
+        ? new Date(payload.publishedAt)
+        : undefined,
     },
     include: {
       author: {
@@ -394,8 +638,12 @@ const updateFeatureUpdate = async (
 };
 
 const deleteFeatureUpdate = async (id: string, role: string) => {
+  // ... keep existing implementation unchanged ...
   if (!isAdminRole(role)) {
-    throw new ApiError(httpStatus.FORBIDDEN, "Only admins can delete feature updates");
+    throw new ApiError(
+      httpStatus.FORBIDDEN,
+      "Only admins can delete feature updates"
+    );
   }
 
   const existing = await prisma.featureUpdate.findUnique({ where: { id } });
@@ -414,6 +662,7 @@ export const FeatureService = {
   getFeatureRequestById,
   updateFeatureRequest,
   deleteFeatureRequest,
+  toggleVote,
   createReply,
   deleteReply,
   createFeatureUpdate,

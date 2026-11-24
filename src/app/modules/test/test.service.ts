@@ -24,58 +24,9 @@ import type {
 
 const TestSearchableFields = ["title", "description"];
 
-// ⚠ Check your NotificationType enum. If these don't exist, add them
-// (then run `npx prisma migrate dev`) or point them at existing values.
-const TEST_ASSIGNED = "TEST_ASSIGNED" as NotificationType;
-const TEST_ATTEMPT_SUBMITTED = "TEST_ATTEMPT_SUBMITTED" as NotificationType;
-
-// ─── Notification helpers ─────────────────────────────────────────
-
-// Removes users who turned off in-app notifications or test alerts
-const filterByPreference = async (userIds: string[]) => {
-  if (userIds.length === 0) return [];
-
-  const blocked = await prisma.notificationPreference.findMany({
-    where: {
-      userId: { in: userIds },
-      OR: [{ inAppEnabled: false }, { testAssigned: false }],
-    },
-    select: { userId: true },
-  });
-
-  const blockedIds = new Set(blocked.map((b) => b.userId));
-  return userIds.filter((id) => !blockedIds.has(id));
-};
-
-// Sends to many users in small batches. Never throws.
-const notifyMany = async (
-  userIds: string[],
-  input: { type: NotificationType; title: string; body: string; entityId: string }
-) => {
-  try {
-    const targets = await filterByPreference(userIds);
-    const BATCH = 20;
-
-    for (let i = 0; i < targets.length; i += BATCH) {
-      await Promise.all(
-        targets.slice(i, i + BATCH).map((userId) =>
-          NotificationService.createNotification({
-            userId,
-            type: input.type,
-            title: input.title,
-            body: input.body,
-            entityType: "Test",
-            entityId: input.entityId,
-          }).catch((error: unknown) =>
-            console.error("[TestService.notifyMany]", error)
-          )
-        )
-      );
-    }
-  } catch (error) {
-    console.error("[TestService.notifyMany]", error);
-  }
-};
+// ─── Notification Types ───────────────────────────────────────────
+const TEST_ASSIGNED = NotificationType.TEST_ASSIGNED;
+const TEST_RESULT = NotificationType.TEST_RESULT;
 
 // ─── Create ───────────────────────────────────────────────────────
 
@@ -176,7 +127,7 @@ const createTest = async (userId: string, payload: ICreateTest) => {
       }
     }
 
-    // 4. Sector Members (NEW)
+    // 4. Sector Members
     if (payload.targetType === TestTargetType.SECTOR_MEMBERS && sectorId) {
       const sectorMembers = await tx.sectorMember.findMany({
         where: { sectorId },
@@ -239,6 +190,8 @@ const createTest = async (userId: string, payload: ICreateTest) => {
   });
 };
 
+// ─── Get All ──────────────────────────────────────────────────────
+
 const getAllTests = async (filters: ITestFilter, query: PaginationQuery) => {
   const { page, limit, skip, take, sortBy, sortOrder } = calculatePagination(query);
   const { searchTerm, ...filterData } = filters;
@@ -261,7 +214,8 @@ const getAllTests = async (filters: ITestFilter, query: PaginationQuery) => {
     });
   }
 
-  const where: Prisma.TestWhereInput = andConditions.length > 0 ? { AND: andConditions } : {};
+  const where: Prisma.TestWhereInput =
+    andConditions.length > 0 ? { AND: andConditions } : {};
 
   const [data, total] = await Promise.all([
     prisma.test.findMany({
@@ -290,6 +244,8 @@ const getAllTests = async (filters: ITestFilter, query: PaginationQuery) => {
   };
 };
 
+// ─── Get Single ───────────────────────────────────────────────────
+
 const getSingleTest = async (id: string, userId?: string) => {
   const test = await prisma.test.findUnique({
     where: { id },
@@ -317,11 +273,13 @@ const getSingleTest = async (id: string, userId?: string) => {
   return test;
 };
 
+// ─── Update ───────────────────────────────────────────────────────
+
 const updateTest = async (id: string, userId: string, payload: IUpdateTest) => {
   const test = await prisma.test.findUnique({ where: { id } });
   if (!test) throw new ApiError(httpStatus.NOT_FOUND, "Test not found");
   if (test.createdById !== userId) {
-    throw new ApiError(httpStatus.FORBIDDEN, "Only creator can update this test");
+    throw new ApiError(httpStatus.FORBIDDEN, "Only the creator can update this test");
   }
 
   return prisma.test.update({
@@ -330,11 +288,13 @@ const updateTest = async (id: string, userId: string, payload: IUpdateTest) => {
   });
 };
 
+// ─── Publish ──────────────────────────────────────────────────────
+
 const publishTest = async (id: string, userId: string) => {
   const test = await prisma.test.findUnique({ where: { id } });
   if (!test) throw new ApiError(httpStatus.NOT_FOUND, "Test not found");
   if (test.createdById !== userId) {
-    throw new ApiError(httpStatus.FORBIDDEN, "Only creator can publish this test");
+    throw new ApiError(httpStatus.FORBIDDEN, "Only the creator can publish this test");
   }
 
   const published = await prisma.test.update({
@@ -342,38 +302,50 @@ const publishTest = async (id: string, userId: string) => {
     data: { status: TestStatus.PUBLISHED },
   });
 
-  // Notify assignees only on the first publish (no duplicates)
+  // Notify assignees only on the first publish
   if (test.status !== TestStatus.PUBLISHED) {
     const assignments = await prisma.testAssignment.findMany({
       where: { testId: id },
       select: { userId: true },
     });
 
-    await notifyMany(
-      assignments.map((a) => a.userId).filter((uid) => uid !== userId),
+    const targetIds = assignments
+      .map((a) => a.userId)
+      .filter((uid) => uid !== userId);
+
+    await NotificationService.notifyManySafe(
+      targetIds,
       {
         type: TEST_ASSIGNED,
-        title: "New test available",
-        body: `A new test was published: ${published.title}`,
+        title: "New test assigned",
+        body: `"${published.title}" is now available. You can start whenever you're ready.`,
+        entityType: "Test",
         entityId: id,
-      }
+        metadata: {
+          testTitle: published.title,
+          action: "start_test",
+        },
+      },
+      "testAssigned"
     );
   }
 
   return published;
 };
 
+// ─── Delete ───────────────────────────────────────────────────────
+
 const deleteTest = async (id: string, userId: string) => {
   const test = await prisma.test.findUnique({ where: { id } });
   if (!test) throw new ApiError(httpStatus.NOT_FOUND, "Test not found");
   if (test.createdById !== userId) {
-    throw new ApiError(httpStatus.FORBIDDEN, "Only creator can delete this test");
+    throw new ApiError(httpStatus.FORBIDDEN, "Only the creator can delete this test");
   }
 
   return prisma.test.delete({ where: { id } });
 };
 
-// ─── Attempt System ───────────────────────────────────────────────
+// ─── Start Attempt ────────────────────────────────────────────────
 
 const startAttempt = async (testId: string, userId: string) => {
   const test = await prisma.test.findUnique({
@@ -386,7 +358,6 @@ const startAttempt = async (testId: string, userId: string) => {
     throw new ApiError(httpStatus.BAD_REQUEST, "Test is not published yet");
   }
 
-  // Check if already attempted
   const existing = await prisma.testAttempt.findUnique({
     where: { testId_userId: { testId, userId } },
   });
@@ -406,6 +377,8 @@ const startAttempt = async (testId: string, userId: string) => {
   return attempt;
 };
 
+// ─── Submit Attempt ───────────────────────────────────────────────
+
 const submitAttempt = async (
   testId: string,
   userId: string,
@@ -416,11 +389,17 @@ const submitAttempt = async (
   });
 
   if (!attempt) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Attempt not found. Please start the test first.");
+    throw new ApiError(
+      httpStatus.NOT_FOUND,
+      "Attempt not found. Please start the test first."
+    );
   }
 
   if (attempt.status !== AttemptStatus.IN_PROGRESS) {
-    throw new ApiError(httpStatus.BAD_REQUEST, "This attempt is already submitted");
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      "This attempt has already been submitted"
+    );
   }
 
   const test = await prisma.test.findUnique({
@@ -466,7 +445,10 @@ const submitAttempt = async (
     });
   }
 
-  const percentage = test.totalMarks > 0 ? (totalScore / test.totalMarks) * 100 : 0;
+  const percentage =
+    test.totalMarks > 0
+      ? Math.round((totalScore / test.totalMarks) * 1000) / 10
+      : 0;
 
   const updatedAttempt = await prisma.testAttempt.update({
     where: { id: attempt.id },
@@ -495,7 +477,53 @@ const submitAttempt = async (
     },
   });
 
-  // Notify the test creator (skip if they attempted their own test)
+  // ────────────────────────────────────────────────
+  // 1. Notify the student about their result
+  // ────────────────────────────────────────────────
+  try {
+    const passed = test.passingMarks
+      ? totalScore >= test.passingMarks
+      : percentage >= 50;
+
+    let title: string;
+    let body: string;
+
+    if (percentage >= 90) {
+      title = "Excellent result";
+      body = `You scored ${totalScore}/${test.totalMarks} (${percentage}%) on "${test.title}". Outstanding work.`;
+    } else if (passed) {
+      title = "You passed";
+      body = `You scored ${totalScore}/${test.totalMarks} (${percentage}%) on "${test.title}". Well done.`;
+    } else {
+      title = "Result available";
+      body = `You scored ${totalScore}/${test.totalMarks} (${percentage}%) on "${test.title}". Review the answers and try again when ready.`;
+    }
+
+    await NotificationService.notifySafe(
+      {
+        userId,
+        type: TEST_RESULT,
+        title,
+        body,
+        entityType: "Test",
+        entityId: testId,
+        metadata: {
+          score: totalScore,
+          totalMarks: test.totalMarks,
+          percentage,
+          passed,
+          action: "view_result",
+        },
+      },
+      "testAssigned"
+    );
+  } catch (error) {
+    console.error("[TestService.submitAttempt - student notify]", error);
+  }
+
+  // ────────────────────────────────────────────────
+  // 2. Notify the test creator
+  // ────────────────────────────────────────────────
   if (test.createdById !== userId) {
     try {
       const student = await prisma.user.findUnique({
@@ -503,21 +531,31 @@ const submitAttempt = async (
         select: { name: true },
       });
 
-      await NotificationService.createNotification({
+      await NotificationService.notifySafe({
         userId: test.createdById,
-        type: TEST_ATTEMPT_SUBMITTED,
-        title: "Test attempt submitted",
-        body: `${student?.name ?? "A member"} submitted "${test.title}" (${totalScore}/${test.totalMarks})`,
+        type: NotificationType.SUBMISSION_REVIEWED,
+        title: "New submission received",
+        body: `${student?.name ?? "A member"} submitted "${test.title}" — ${totalScore}/${test.totalMarks} (${percentage}%)`,
         entityType: "Test",
         entityId: testId,
+        metadata: {
+          studentId: userId,
+          studentName: student?.name,
+          score: totalScore,
+          totalMarks: test.totalMarks,
+          percentage,
+          action: "view_submission",
+        },
       });
     } catch (error) {
-      console.error("[TestService.submitAttempt notify]", error);
+      console.error("[TestService.submitAttempt - creator notify]", error);
     }
   }
 
   return updatedAttempt;
 };
+
+// ─── Get My Attempt ───────────────────────────────────────────────
 
 const getMyAttempt = async (testId: string, userId: string) => {
   const attempt = await prisma.testAttempt.findUnique({
@@ -547,6 +585,8 @@ const getMyAttempt = async (testId: string, userId: string) => {
 
   return attempt;
 };
+
+// ─── Export ───────────────────────────────────────────────────────
 
 export const TestService = {
   createTest,

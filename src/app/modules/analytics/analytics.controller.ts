@@ -26,9 +26,32 @@ const getRecentActivities = async (req: FastifyRequest, reply: FastifyReply) => 
   });
 };
 
+/**
+ * GET /leaderboard
+ * Query: period (7d | 30d | 90d | this_month | last_month | all_time),
+ *        limit, offset, group, semester
+ * The logged-in user's id is passed so the response includes their own rank.
+ */
 const getLeaderboard = async (req: FastifyRequest, reply: FastifyReply) => {
-  const limit = Number((req.query as any).limit) || 10;
-  const result = await AnalyticsService.getUserLeaderboard(limit);
+  const query = req.query as {
+    period?: string;
+    limit?: string;
+    offset?: string;
+    group?: string;
+    semester?: string;
+  };
+
+  // depending on your auth middleware the id may be `id` or `userId`
+  const user = (req as any).user as { id?: string; userId?: string } | undefined;
+
+  const result = await AnalyticsService.getLeaderboard({
+    period: query.period,
+    limit: query.limit,
+    offset: query.offset,
+    group: query.group,
+    semester: query.semester,
+    userId: user?.id ?? user?.userId,
+  });
 
   return sendResponse(reply, {
     statusCode: httpStatus.OK,

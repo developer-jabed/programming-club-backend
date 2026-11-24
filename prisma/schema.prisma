@@ -149,6 +149,7 @@ enum NotificationType {
   SYSTEM
   REMINDER
   PAYMENT_RECEIVED
+  
 }
 
 enum NotificationChannel {
@@ -204,6 +205,7 @@ model User {
   payments          Payment[]  @relation("PaymentPayer")
   receivedPayments  Payment[]  @relation("PaymentReceiver")
   voidedPayments    Payment[]  @relation("PaymentVoider")
+  featureRequestVotes FeatureRequestVote[]
 
   @@index([role, status])
   @@index([email])
@@ -637,6 +639,7 @@ model FeatureRequest {
   // Relations
   replies         FeatureRequestReply[]
   relatedUpdates  FeatureUpdate[]          // ← opposite side of FeatureUpdate.relatedFeatureRequest
+  voteRecords FeatureRequestVote[]
 
   @@index([status, createdAt])
   @@index([createdById])
@@ -670,6 +673,21 @@ model FeatureRequestReply {
   @@map("feature_request_replies")
 }
 
+
+model FeatureRequestVote {
+  id               String   @id @default(cuid())
+  featureRequestId String
+  userId           String
+  createdAt        DateTime @default(now())
+
+  featureRequest FeatureRequest @relation(fields: [featureRequestId], references: [id], onDelete: Cascade)
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([featureRequestId, userId])
+  @@index([featureRequestId])
+  @@index([userId])
+  @@map("feature_request_votes")
+}
 
 enum FeatureUpdateType {
   FEATURE_UPDATE

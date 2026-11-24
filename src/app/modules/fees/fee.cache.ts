@@ -1,13 +1,11 @@
 /**
  * Tiny in-memory TTL cache with:
- *  - in-flight de-duplication (10 identical requests -> 1 DB query)
+ *  - in-flight de-duplication
  *  - prefix invalidation
- *  - generation guard (a query that started before an invalidation never
- *    writes its stale result back)
- *  - size cap (oldest entries evicted first)
+ *  - generation guard
+ *  - size cap
  *
- * Single-instance only. If you run several backend instances, swap this
- * file for a Redis-backed version with the same `cached` / `invalidate` API.
+ * Single-instance only. Swap for Redis if you scale horizontally.
  */
 
 type Entry = { value: unknown; expiresAt: number };
@@ -23,14 +21,20 @@ export async function cached<T>(
   loader: () => Promise<T>
 ): Promise<T> {
   const hit = store.get(key);
-  if (hit && hit.expiresAt > Date.now()) return hit.value as T;
+  if (hit && hit.expiresAt > Date.now()) {
+    return hit.value as T;
+  }
 
   const running = inflight.get(key);
-  if (running) return running as Promise<T>;
+  if (running) {
+    return running as Promise<T>;
+  }
 
   const startedAt = generation;
+
   const promise = loader()
     .then((value) => {
+      // Only write if no invalidation happened while we were loading
       if (startedAt === generation) {
         if (store.size >= MAX_ENTRIES) {
           const oldest = store.keys().next().value;
@@ -40,7 +44,9 @@ export async function cached<T>(
       }
       return value;
     })
-    .finally(() => inflight.delete(key));
+    .finally(() => {
+      inflight.delete(key);
+    });
 
   inflight.set(key, promise);
   return promise;
@@ -50,9 +56,13 @@ export async function cached<T>(
 export function invalidate(...prefixes: string[]) {
   generation++;
   for (const key of store.keys()) {
-    if (prefixes.some((p) => key.startsWith(p))) store.delete(key);
+    if (prefixes.some((p) => key.startsWith(p))) {
+      store.delete(key);
+    }
   }
   for (const key of inflight.keys()) {
-    if (prefixes.some((p) => key.startsWith(p))) inflight.delete(key);
+    if (prefixes.some((p) => key.startsWith(p))) {
+      inflight.delete(key);
+    }
   }
 }

@@ -17,7 +17,6 @@ const getCategories = async (req: FastifyRequest, reply: FastifyReply) => {
   const user = req.user as JwtPayload;
   const { includeInactive } = req.query as { includeInactive?: boolean };
 
-  // only staff may see inactive categories
   const result = await FeeService.getCategories(
     !!includeInactive && user.role !== "MEMBER"
   );
