@@ -11,6 +11,8 @@ import type {
   IUpdateFeatureUpdate,
 } from "./feature.interface.js";
 
+// ==================== Feature Requests ====================
+
 const createFeatureRequest = async (
   req: FastifyRequest<{ Body: ICreateFeatureRequest }>,
   reply: FastifyReply
@@ -18,7 +20,7 @@ const createFeatureRequest = async (
   const user = req.user as JwtPayload;
   const result = await FeatureService.createFeatureRequest(user.id, req.body);
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.CREATED,
     success: true,
     message: "Feature request created successfully",
@@ -33,7 +35,7 @@ const getFeatureRequests = async (req: FastifyRequest, reply: FastifyReply) => {
     user
   );
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Feature requests retrieved successfully",
@@ -52,7 +54,7 @@ const getFeatureRequestById = async (
     user
   );
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Feature request retrieved successfully",
@@ -72,7 +74,7 @@ const updateFeatureRequest = async (
     req.body
   );
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Feature request updated successfully",
@@ -91,7 +93,7 @@ const deleteFeatureRequest = async (
     user.role
   );
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.OK,
     success: true,
     message: result.message,
@@ -106,13 +108,15 @@ const toggleVote = async (
   const user = req.user as JwtPayload;
   const result = await FeatureService.toggleVote(req.params.id, user.id);
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.OK,
     success: true,
     message: result.voted ? "Vote added" : "Vote removed",
     data: result, // { voted: boolean, votes: number }
   });
 };
+
+// ==================== Replies ====================
 
 const createReply = async (
   req: FastifyRequest<{
@@ -129,7 +133,7 @@ const createReply = async (
     req.body
   );
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.CREATED,
     success: true,
     message: "Reply added successfully",
@@ -148,7 +152,7 @@ const deleteReply = async (
     user.role
   );
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.OK,
     success: true,
     message: result.message,
@@ -169,7 +173,7 @@ const createFeatureUpdate = async (
     req.body
   );
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.CREATED,
     success: true,
     message: "Feature update created successfully",
@@ -180,7 +184,7 @@ const createFeatureUpdate = async (
 const getFeatureUpdates = async (req: FastifyRequest, reply: FastifyReply) => {
   const result = await FeatureService.getFeatureUpdates(req.query as any);
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Feature updates retrieved successfully",
@@ -195,7 +199,7 @@ const getFeatureUpdateById = async (
 ) => {
   const result = await FeatureService.getFeatureUpdateById(req.params.id);
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Feature update retrieved successfully",
@@ -215,7 +219,7 @@ const updateFeatureUpdate = async (
     req.body
   );
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Feature update updated successfully",
@@ -233,7 +237,7 @@ const deleteFeatureUpdate = async (
     user.role
   );
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.OK,
     success: true,
     message: result.message,
