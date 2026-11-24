@@ -21,7 +21,7 @@ const getCategories = async (req: FastifyRequest, reply: FastifyReply) => {
     !!includeInactive && user.role !== "MEMBER"
   );
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Categories retrieved successfully",
@@ -35,7 +35,7 @@ const createCategory = async (
 ) => {
   const result = await FeeService.createCategory(req.body);
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.CREATED,
     success: true,
     message: "Category created successfully",
@@ -49,7 +49,7 @@ const updateCategory = async (
 ) => {
   const result = await FeeService.updateCategory(req.params.id, req.body);
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Category updated successfully",
@@ -63,7 +63,7 @@ const getDues = async (req: FastifyRequest, reply: FastifyReply) => {
   const user = req.user as JwtPayload;
   const result = await FeeService.getDues(req.query as any, user);
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Dues retrieved successfully",
@@ -79,7 +79,7 @@ const generateMonthlyDues = async (
   const user = req.user as JwtPayload;
   const result = await FeeService.generateMonthlyDues(req.body, user);
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.CREATED,
     success: true,
     message: "Monthly dues generated successfully",
@@ -94,7 +94,7 @@ const createDues = async (
   const user = req.user as JwtPayload;
   const result = await FeeService.createDues(req.body, user);
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.CREATED,
     success: true,
     message: "Dues created successfully",
@@ -108,7 +108,7 @@ const waiveDue = async (
 ) => {
   const result = await FeeService.waiveDue(req.params.id, req.body?.note);
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Due waived successfully",
@@ -122,7 +122,7 @@ const deleteDue = async (
 ) => {
   await FeeService.deleteDue(req.params.id);
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Due deleted successfully",
@@ -136,7 +136,7 @@ const getPayments = async (req: FastifyRequest, reply: FastifyReply) => {
   const user = req.user as JwtPayload;
   const result = await FeeService.getPayments(req.query as any, user);
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Payments retrieved successfully",
@@ -152,7 +152,7 @@ const getPaymentById = async (
   const user = req.user as JwtPayload;
   const result = await FeeService.getPaymentById(req.params.id, user);
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Payment retrieved successfully",
@@ -167,7 +167,7 @@ const recordPayment = async (
   const user = req.user as JwtPayload;
   const result = await FeeService.recordPayment(req.body, user);
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.CREATED,
     success: true,
     message: "Payment recorded successfully",
@@ -186,7 +186,7 @@ const voidPayment = async (
     user
   );
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Payment voided successfully",
@@ -199,7 +199,7 @@ const voidPayment = async (
 const getAdminSummary = async (req: FastifyRequest, reply: FastifyReply) => {
   const result = await FeeService.getAdminSummary(req.query as any);
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Summary retrieved successfully",
@@ -211,7 +211,7 @@ const getMySummary = async (req: FastifyRequest, reply: FastifyReply) => {
   const user = req.user as JwtPayload;
   const result = await FeeService.getMySummary(user.id);
 
-  sendResponse(reply, {
+  return sendResponse(reply, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Summary retrieved successfully",
