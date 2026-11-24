@@ -41,7 +41,7 @@ export default async function userRoutes(fastify: FastifyInstance) {
     "/:id",
     {
       preHandler: [
-        auth(UserRole.ADMIN, UserRole.MODERATOR),
+        auth(UserRole.ADMIN, UserRole.MODERATOR, UserRole.MEMBER),
         // validateRequest(UserValidation.updateUserSchema),
       ],
     },
