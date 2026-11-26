@@ -1,6 +1,8 @@
 const FRONTEND_URL =
   process.env.FRONTEND_URL || "https://programming-club-frontend.vercel.app";
 
+  
+
 const escapeHtml = (value: string): string =>
   value
     .replace(/&/g, "&amp;")
@@ -14,6 +16,8 @@ export interface SendMailResult {
   id?: string;
   error?: string;
 }
+
+const FEES_URL = `${FRONTEND_URL}/fees`;
 
 /* ─────────────────────────────────────────────────────────────
  * Shared Brevo sender (used by every email below)
@@ -167,7 +171,7 @@ const buildReceiptHtml = (p: PaymentReceiptPayload) => `
     ${p.note ? row("Note", escapeHtml(p.note)) : ""}
   </table>
   <p style="margin:24px 0;">
-    <a href="${FRONTEND_URL}"
+    <a href="${FEES_URL}"
        style="background:#4f46e5;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;display:inline-block;">
       View my payments
     </a>
@@ -191,5 +195,5 @@ export const sendPaymentReceiptEmail = (p: PaymentReceiptPayload): Promise<SendM
         ? `Due: ${p.due.label} (${p.due.remaining > 0 ? `${money(p.due.remaining)} remaining` : "fully paid"})\n`
         : "") +
       (p.note ? `Note: ${p.note}\n` : "") +
-      `\nWebsite: ${FRONTEND_URL}`,
+      `\nWebsite: ${FEES_URL}`,
   });

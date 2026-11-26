@@ -26,6 +26,9 @@ const FALLBACK_TYPE = NotificationType.TASK_STATUS_CHANGED;
 // Keyed by string so this compiles before the enum value exists.
 const TYPE_FALLBACKS: Record<string, NotificationType> = {
   PAYMENT_RECEIVED: NotificationType.SYSTEM,
+  EXPENSE_RECORDED: NotificationType.SYSTEM,
+  EXPENSE_VOIDED: NotificationType.SYSTEM,
+  FUND_LOW: NotificationType.SYSTEM,
 };
 
 const resolveType = (type: NotificationType): NotificationType => {

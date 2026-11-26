@@ -24,8 +24,7 @@ enum UserStatus {
 
 enum Shift {
   DAY
-  EVENING
-  NIGHT
+  MORNING
 }
 
 enum SectorMemberRole {
@@ -206,6 +205,8 @@ model User {
   receivedPayments  Payment[]  @relation("PaymentReceiver")
   voidedPayments    Payment[]  @relation("PaymentVoider")
   featureRequestVotes FeatureRequestVote[]
+  recordedExpenses Expense[] @relation("ExpenseRecorder")
+  voidedExpenses   Expense[] @relation("ExpenseVoider")
 
   @@index([role, status])
   @@index([email])
@@ -231,6 +232,7 @@ model Sector {
   members     SectorMember[]
   featureRequests FeatureRequest[]
   featureUpdates  FeatureUpdate[]
+  expenses Expense[]
 
   @@map("sectors")
 }
@@ -271,6 +273,7 @@ model Project {
   submissions  ProjectSubmission[]
   tests        Test[]
   featureRequests FeatureRequest[]
+  expenses Expense[]
 
   @@index([ownerId])
   @@index([sectorId])
@@ -841,4 +844,65 @@ model Payment {
   @@index([categoryId, paidAt])
   @@index([receivedById, paidAt])
   @@map("payments")
+}
+
+
+
+enum ExpenseStatus {
+  RECORDED
+  VOIDED
+}
+
+model ExpenseCategory {
+  id          String    @id @default(cuid())
+  name        String    @unique   // Event, Food, Hosting, Equipment, Prize, Other
+  slug        String    @unique
+  description String?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  expenses    Expense[]
+
+  @@map("expense_categories")
+}
+
+model Expense {
+  id           String          @id @default(cuid())
+  expenseNo    Int             @unique @default(autoincrement())
+
+  categoryId   String
+  category     ExpenseCategory @relation(fields: [categoryId], references: [id])
+
+  title        String          // short: "Pizza for hackathon"
+  description  String          // required: what and why
+  amount       Int             // BDT
+  spentAt      DateTime        @default(now())
+  paidTo       String?         // vendor or person
+  receiptUrl   String?         // Cloudinary link to bill photo
+
+  // Optional links
+  projectId    String?
+  project      Project?        @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  sectorId     String?
+  sector       Sector?         @relation(fields: [sectorId], references: [id], onDelete: SetNull)
+
+  status       ExpenseStatus   @default(RECORDED)
+
+  recordedById String
+  recordedBy   User            @relation("ExpenseRecorder", fields: [recordedById], references: [id])
+
+  voidedAt     DateTime?
+  voidedById   String?
+  voidedBy     User?           @relation("ExpenseVoider", fields: [voidedById], references: [id])
+  voidReason   String?
+
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  @@index([status, spentAt])
+  @@index([categoryId, spentAt])
+  @@index([recordedById])
+  @@index([projectId])
+  @@map("expenses")
 }
